@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rsrv.h 177 2006-11-28 22:13:31Z urbanek $
+ *  $Id: Rsrv.h 181 2006-11-30 15:00:56Z urbanek $
  */
 
 /* external defines:
@@ -27,7 +27,7 @@
 
 #include "config.h"
 
-#define RSRV_VER 0x000405 /* Rserve v0.4-5 */
+#define RSRV_VER 0x000406 /* Rserve v0.4-6 */
 
 #define default_Rsrv_port 6311
 
@@ -270,7 +270,10 @@ struct phdr { /* always 16 bytes */
 #if defined BS_BIG_ENDIAN
 #define SWAPEND 1
 #else
+/* we assume that Windows is little-endian (which is true for Intel but possibly not others) */
+#ifndef Win32
 #error "Cannot determine endianness. Make sure config.h is included or __{BIG|LITTLE}_ENDIAN__ is defined ."
+#endif
 #endif
 #endif
 #endif
