@@ -22,7 +22,7 @@
    Modified to work better with autoconf and added md5hash
    convenience function (Simon Urbanek, 2005/09/30)
 
-   $Id: md5.c,v 1.1 2005/08/31 00:49:09 urbaneks Exp $
+   $Id: md5.c 140 2005-08-31 00:49:09Z urbaneks $
  */
 
 #include "config.h"

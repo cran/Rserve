@@ -16,7 +16,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rconnection.h,v 1.7 2006/04/21 18:26:18 urbaneks Exp $
+ *  $Id: Rconnection.h 155 2006-04-21 18:26:18Z urbaneks $
  */
 
 /* external defines:

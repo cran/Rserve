@@ -16,7 +16,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: rcons.cc,v 1.2 2004/09/26 21:41:41 urbaneks Exp $
+ *  $Id: rcons.cc 113 2004-09-26 21:41:41Z urbaneks $
  */
 
 #include <iostream>

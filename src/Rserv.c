@@ -17,7 +17,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c,v 1.72 2006/11/09 21:42:58 urbaneks Exp $
+ *  $Id: Rserv.c 179 2006-11-29 14:52:47Z urbanek $
  */
 
 /* external defines:
@@ -150,7 +150,16 @@ typedef int socklen_t;
 #include <sisocks.h>
 #include <string.h>
 #ifdef unix
-#include <sys/time.h>
+#if TIME_WITH_SYS_TIME
+# include <sys/time.h>
+# include <time.h>
+#else
+# if HAVE_SYS_TIME_H
+#  include <sys/time.h>
+# else
+#  include <time.h>
+# endif
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -197,6 +206,13 @@ typedef int socklen_t;
 */
 #ifndef sndBS /* configure may have defined one already */
 #define sndBS (2048*1024)
+#endif
+
+/* the # of arguments to R_ParseVector changed since R 2.5.0 */
+#if R_VERSION < R_Version(2,5,0)
+#define RS_ParseVector R_ParseVector
+#else
+#define RS_ParseVector(A,B,C) R_ParseVector(A,B,C,R_NilValue)
 #endif
 
 int dumpLimit=128;
@@ -946,7 +962,7 @@ SEXP parseString(char *s, int *parts, ParseStatus *status) {
     SET_VECTOR_ELT(cv, 0, mkChar(s));  
     
     while (maxParts>0) {
-		pr=R_ParseVector(cv, maxParts, status);
+		pr=RS_ParseVector(cv, maxParts, status);
 		if (*status!=PARSE_INCOMPLETE && *status!=PARSE_EOF) break;
 		maxParts--;
     }
@@ -962,7 +978,7 @@ SEXP parseExps(char *s, int exps, ParseStatus *status) {
     
     PROTECT(cv=allocVector(STRSXP, 1));
     SET_VECTOR_ELT(cv, 0, mkChar(s));  
-    pr=R_ParseVector(cv, 1, status);
+    pr=RS_ParseVector(cv, 1, status);
     UNPROTECT(1);
     return pr;
 }
