@@ -17,7 +17,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 227 2008-07-22 15:46:29Z urbanek $
+ *  $Id: Rserv.c 243 2008-10-15 13:55:42Z urbanek $
  */
 
 /* external defines:
@@ -255,7 +255,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 227 2008-07-22 15:46:29Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 243 2008-10-15 13:55:42Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -328,7 +328,7 @@ rlen_t getStorageSize(SEXP x) {
 #ifdef RSERV_DEBUG
     printf("getStorageSize(type=%d,len=%d)\n",t,tl);
 #endif
-    if (TYPEOF(ATTRIB(x))>0) {
+    if (TYPEOF(ATTRIB(x)) == LISTSXP) {
 		rlen_t alen=getStorageSize(ATTRIB(x));
 		len+=alen;
     }
@@ -410,7 +410,7 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		*buf=itop(XT_NULL); buf++; goto didit;
     }
     
-    if (TYPEOF(ATTRIB(x))>0) hasAttr=XT_HAS_ATTR;
+    if (TYPEOF(ATTRIB(x)) == LISTSXP) hasAttr=XT_HAS_ATTR;
     
     if (t==NILSXP) {
 		*buf=itop(XT_NULL|hasAttr);
@@ -615,7 +615,7 @@ void printSEXP(SEXP e) /* merely for debugging purposes
     int t = TYPEOF(e);
     int i = 0;
 
-	if (ATTRIB(e) != R_NilValue)
+	if (TYPEOF(ATTRIB(e)) == LISTSXP)
 		printf("[*has attr*] ");
     
     if (t==NILSXP) {
@@ -840,24 +840,38 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		break;
 	case XT_VECTOR:
 	case XT_VECTOR_STR:
+	case XT_VECTOR_EXP:
 		{
 			unsigned char *ie = (unsigned char*) b + ln;
 			int n=0;
 			SEXP lh = R_NilValue;
 			*buf=b;
+			SEXP vr = allocVector(VECSXP, 1);
+			PROTECT(vr);
 			while ((unsigned char*)*buf < ie) {
-				SEXP v = decode_to_SEXP(buf, UPC);
+				int my_upc = 0; /* unprotect all objects on the way since we're staying locked-in */
+				SEXP v = decode_to_SEXP(buf, &my_upc);
 				lh = CONS(v, lh);
+				SET_VECTOR_ELT(vr, 0, lh); /* this is our way of staying protected .. maybe not optimal .. */
+				if (my_upc) UNPROTECT(my_upc);
 				n++;
 			}
-			printf(" vector, %d elements\n", n);
-			val = allocVector((ty==XT_VECTOR)?VECSXP:STRSXP, n);
+#ifdef RSERV_DEBUG
+			printf(" vector (%s), %d elements\n", (ty==XT_VECTOR)?"generic":((ty==XT_VECTOR_EXP)?"expression":"string"), n);
+#endif
+			val = allocVector((ty==XT_VECTOR)?VECSXP:((ty==XT_VECTOR_EXP)?EXPRSXP:STRSXP), n);
+			PROTECT(val);
 			while (n>0) {
 				n--;
 				SET_ELEMENT(val, n, CAR(lh));
 				lh=CDR(lh);
 			}
+#ifdef RSERV_DEBUG
 			printf(" end of vector %x/%x\n", (int) *buf, (int) ie);
+#endif
+			UNPROTECT(2); /* val and vr */
+			PROTECT(val);
+			(*UPC)++;
 			break;
 		}
 
@@ -865,13 +879,17 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 	case XT_SYMNAME:
 		/* i=ptoi(*b);
 		   b++; */
+#ifdef RSERV_DEBUG
 		printf(" string/symbol(%d) '%s'\n", ty, (char*)b);
+#endif
 		{
 			char *c = (char*) b;
 			if (ty==XT_STR)
 				val=mkChar(c);
 			else
 				val=install(c);
+			PROTECT(val);
+			(*UPC)++;
 		}
 		*buf=(unsigned int*)((char*)b + ln);
 		break;
@@ -883,24 +901,34 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 			SEXP vnext = R_NilValue, vtail = 0;
 			unsigned char *ie = (unsigned char*) b + ln;
 			val = R_NilValue;
-			*buf=b;
+			*buf = b;
 			while ((unsigned char*)*buf < ie) {
+				int my_upc = 0;
+#ifdef RSERV_DEBUG
 				printf(" el %08x of %08x\n", (unsigned int)*buf, (unsigned int) ie);
-				SEXP el = decode_to_SEXP(buf, UPC);
+#endif
+				SEXP el = decode_to_SEXP(buf, &my_upc);
 				SEXP ea = 0;
 				if (ty==XT_LANG_TAG || ty==XT_LIST_TAG) {
+#ifdef RSERV_DEBUG
 					printf(" tag %08x of %08x\n", (unsigned int)*buf, (unsigned int) ie);
-					ea = decode_to_SEXP(buf, UPC);
+#endif
+					ea = decode_to_SEXP(buf, &my_upc);
 				}
 				if (ty==XT_LANG_TAG || ty==XT_LANG_NOTAG)
 					vnext = LCONS(el, R_NilValue);
 				else
 					vnext = CONS(el, R_NilValue);
+				if (my_upc) UNPROTECT(my_upc);
+				PROTECT(vnext);
 				if (ea) SET_TAG(vnext, ea);
-				if (vtail)
+				if (vtail) {
 					SETCDR(vtail, vnext);
-				else
+					UNPROTECT(1);
+				} else {
 					val = vnext;
+					(*UPC)++;
+				}
 				vtail = vnext;				   
 			}
 			break;
@@ -1385,9 +1413,7 @@ decl_sbthread newConn(void *thp) {
     char *sendbuf;
     int sendBufSize;
     char *tail;
-    char *fbuf;
     char *sfbuf;
-    int fbufl;
     int Rerror;
     char wdname[512];
     int authed=0;
@@ -1540,7 +1566,7 @@ decl_sbthread newConn(void *thp) {
 		
 				unaligned=0;
 #ifdef RSERV_DEBUG
-				printf("parsing parameters\n");
+				printf("parsing parameters (buf=%p, len=%d)\n", buf, (int) plen);
 				if (plen>0) printDump(buf,plen);
 #endif
 				c=buf+ph.dof;
@@ -1554,8 +1580,8 @@ decl_sbthread newConn(void *thp) {
 						parType^=DT_LARGE;
 					} 
 #ifdef RSERV_DEBUG
-					printf("PAR[%d]: %08x (PAR_LEN=%ld, PAR_TYPE=%d, large=%s)\n", pars, i,
-						   (long)parLen, parType, (headSize==8)?"yes":"no");
+					printf("PAR[%d]: %08x (PAR_LEN=%ld, PAR_TYPE=%d, large=%s, c=%p, ptr=%p)\n", pars, i,
+						   (long)parLen, parType, (headSize==8)?"yes":"no", c, c + headSize);
 #endif
 #ifdef ALIGN_DOUBLES
 					if (unaligned) { /* on Sun machines it is deadly to process unaligned parameters,
@@ -1705,7 +1731,7 @@ decl_sbthread newConn(void *thp) {
 			if (pars<1 || parT[0]!=DT_INT) 
 				sendResp(s,SET_STAT(RESP_ERR,ERR_inv_par));
 			else {
-				rlen_t ns=ptoi(((unsigned int*)parP)[0]);
+				rlen_t ns=ptoi(((unsigned int*)(parP[0]))[0]);
 #ifdef RSERV_DEBUG
 				printf(">>CMD_setSendBuf to %ld bytes.\n", (long)ns);
 #endif
@@ -1788,24 +1814,30 @@ decl_sbthread newConn(void *thp) {
 				if (!cf)
 					sendResp(s,SET_STAT(RESP_ERR,ERR_notOpen));
 				else {
-					fbufl=sfbufSize; fbuf=sfbuf;
-					if (pars==1 && parT[0]==DT_INT)
-						fbufl=ptoi(((unsigned int*)parP)[0]);
+					int fbufl = sfbufSize;
+					char *fbuf = sfbuf;
+					if (pars == 1 && parT[0] == DT_INT)
+						fbufl = ptoi(((unsigned int*)(parP[0]))[0]);
 #ifdef RSERV_DEBUG
-					printf(">>CMD_readFile(%d)\n",fbufl);
+					printf(">>CMD_readFile(%d)\n", fbufl);
 #endif
-					if (fbufl<0) fbufl=sfbufSize;
-					if (fbufl>sfbufSize)
-						fbuf=(char*)malloc(fbufl);
-					if (!fbuf) /* well, logically not clean, but in practice true */
-						sendResp(s,SET_STAT(RESP_ERR,ERR_inv_par));
+					if (fbufl < 0) fbufl = sfbufSize;
+					if (fbufl > sfbufSize) {
+#ifdef RSERV_DEBUG
+						printf(" - requested size %ld is larger than default buffer %ld, allocating extra buffer\n",
+						       (long) fbufl, (long) sfbufSize);
+#endif
+						fbuf = (char*)malloc(fbufl);
+					}
+					if (!fbuf) /* well, logically not clean (it's out of memory), but in practice likely true */
+						sendResp(s, SET_STAT(RESP_ERR, ERR_inv_par));
 					else {
-						i=fread(fbuf,1,fbufl,cf);
-						if (i>0)
-							sendRespData(s,RESP_OK,i,fbuf);
+						i = fread(fbuf, 1, fbufl, cf);
+						if (i > 0)
+							sendRespData(s, RESP_OK, i, fbuf);
 						else
-							sendResp(s,RESP_OK);
-						if (fbuf!=sfbuf)
+							sendResp(s, RESP_OK);
+						if (fbuf != sfbuf)
 							free(fbuf);
 					}
 				}
@@ -2342,10 +2374,10 @@ int main(int argc, char **argv)
 					loadConfig(argv[++i]);
 			}
 			if (!strcmp(argv[i]+2,"RS-settings")) {
-				printf("Rserve v%d.%d-%d\n\nconfig file: %s\nworking root: %s\nport: %d\nlocal socket: %s\nauthorization required: %s\nplain text password: %s\npasswords file: %s\nallow I/O: %s\nmax.input buffer size: %d kB\n\n",
+				printf("Rserve v%d.%d-%d\n\nconfig file: %s\nworking root: %s\nport: %d\nlocal socket: %s\nauthorization required: %s\nplain text password: %s\npasswords file: %s\nallow I/O: %s\nallow remote access: %s\nmax.input buffer size: %d kB\n\n",
 					   RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255,
 					   CONFIG_FILE,workdir,port,localSocketName?localSocketName:"[none, TCP/IP used]",
-					   authReq?"yes":"no",usePlain?"allowed":"not allowed",pwdfile?pwdfile:"[none]",allowIO?"yes":"no",
+					   authReq?"yes":"no",usePlain?"allowed":"not allowed",pwdfile?pwdfile:"[none]",allowIO?"yes":"no",localonly?"no":"yes",
 					   maxInBuf/1024);
 				return 0;	       
 			}

@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rsrv.h 225 2008-07-22 15:20:52Z urbanek $
+ *  $Id: Rsrv.h 234 2008-07-29 13:59:42Z urbanek $
  */
 
 /* external defines:
@@ -25,9 +25,11 @@
 #ifndef __RSRV_H__
 #define __RSRV_H__
 
+#ifndef NO_CONFIG_H
 #include "config.h"
+#endif
 
-#define RSRV_VER 0x000501 /* Rserve v0.5-1 */
+#define RSRV_VER 0x000502 /* Rserve v0.5-2 */
 
 #define default_Rsrv_port 6311
 
@@ -238,7 +240,7 @@ struct phdr { /* always 16 bytes */
 							     (1=TRUE, 0=FALSE, 2=NA) */
 #define XT_S4            7  /* P  data: [0] */
 
-#define XT_VECTOR        16 /* P  data: [?]REXP */
+#define XT_VECTOR        16 /* P  data: [?]REXP,REXP,.. */
 #define XT_LIST          17 /* -  X head, X vals, X tag (since 0.1-5) */
 #define XT_CLOS          18 /* P  X formals, X body  (closure; since 0.1-5) */
 #define XT_SYMNAME       19 /* s  same as XT_STR (since 0.5) */
@@ -247,7 +249,7 @@ struct phdr { /* always 16 bytes */
 #define XT_LANG_NOTAG    22 /* s  same as XT_LIST_NOTAG (since 0.5) */
 #define XT_LANG_TAG      23 /* s  same as XT_LIST_TAG (since 0.5) */
 #define XT_VECTOR_EXP    26 /* s  same as XT_VECTOR (since 0.5) */
-#define XT_VECTOR_STR    27 /* s  same as XT_VECTOR (since 0.5) */
+#define XT_VECTOR_STR    27 /* -  same as XT_VECTOR (since 0.5 but unused, use XT_ARRAY_STR instead) */
 
 #define XT_ARRAY_INT     32 /* P  data: [n*4]int,int,.. */
 #define XT_ARRAY_DOUBLE  33 /* P  data: [n*8]double,double,.. */
@@ -297,18 +299,17 @@ struct phdr { /* always 16 bytes */
    the compiler contants don't work */
 #if defined __BIG_ENDIAN__ || defined _BIG_ENDIAN_
 #define SWAPEND 1
-#else
-#if defined __LITTLE_ENDIAN__ || defined _LITTLE_ENDIAN_ || defined BS_LITTLE_ENDIAN
-#else
-#if defined BS_BIG_ENDIAN
+#elif defined __LITTLE_ENDIAN__ || defined _LITTLE_ENDIAN_ || defined BS_LITTLE_ENDIAN
+/* #undef SWAPEND */
+#elif defined BS_BIG_ENDIAN
 #define SWAPEND 1
-#else
-/* we assume that Windows is little-endian (which is true for Intel but possibly not others) */
-#ifndef Win32
+#elif __ia64__ || __i386__ || __x86_64__ /* take a guess based on the architecture (Intel-like) */
+#define __LITTLE_ENDIAN__ 1
+#elif __ppc__ || __ppc64__ /* any ppc */
+#define __BIG_ENDIAN__ 1
+#define SWAPEND 1
+#elif ! defined Win32 /* Windows is little-endian is most cases, anywhere else we're stuck */
 #error "Cannot determine endianness. Make sure config.h is included or __{BIG|LITTLE}_ENDIAN__ is defined ."
-#endif
-#endif
-#endif
 #endif
 
 /* FIXME: all the mess below needs more efficient implementation - the current one is so messy to work around alignment problems on some platforms like Sun and HP 9000 */
