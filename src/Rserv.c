@@ -17,7 +17,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 179 2006-11-29 14:52:47Z urbanek $
+ *  $Id: Rserv.c 227 2008-07-22 15:46:29Z urbanek $
  */
 
 /* external defines:
@@ -66,6 +66,9 @@
 
  0102 - Rserve 0.3
         added support for large parameters/expressions
+
+ 0103 - Rserve 0.5
+        discard the notion of scalar types
 
 The current implementation uses DT_LARGE/XT_LARGE only for SEXPs larger than 0xfffff0.
 No commands except for CMD_set/assignREXP with DT_REXP accept large input,
@@ -173,10 +176,20 @@ typedef int socklen_t;
 #ifdef FORKED
 #include <sys/wait.h>
 #endif
+#ifdef ERROR
+#undef ERROR
+#endif
 #include <R.h>
 #include <Rinternals.h>
 #include <Rdefines.h>
 #include <Rversion.h>
+#if (R_VERSION >= R_Version(2,3,0))
+#ifdef Win32 /* Windows doesn't have Rinterface */
+extern int R_SignalHandlers;
+#else
+#include <Rinterface.h>
+#endif
+#endif
 #if R_VERSION < 0x2010
 #include "Parse.h"
 #else
@@ -222,6 +235,7 @@ int active = 1; /* 1=server loop is active, 0=shutdown */
 int UCIX   = 1; /* unique connection index */
 
 char *localSocketName = 0; /* if set listen on this local (unix) socket instead of TCP/IP */
+int localSocketMode = 0;   /* if set, chmod is used on the socket when created */
 
 int allowIO=1;  /* 1=allow I/O commands, 0=don't */
 
@@ -237,13 +251,31 @@ int parentPID=-1;
 
 int maxSendBufSize=0; /* max. sendbuf for auto-resize. 0=no limit */
 
+static int umask_value = 0;
+
 static char **allowed_ips = 0;
+
+static const char *rserve_ver_id = "$Id: Rserv.c 227 2008-07-22 15:46:29Z urbanek $";
+
+static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
 #ifdef THREADED
 int localUCIX;
 #else
 #define localUCIX UCIX
 #endif
+
+/* "smart" atoi - accepts 0x for hex and 0 for octal */
+static int satoi(const char *str) {
+	if (!str) return 0;
+	if (str[0]=='0') {
+		if (str[1]=='x')
+			return strtol(str, 0, 16);
+		if (str[1]>='0' && str[1]<='9')
+			return strtol(str, 0, 8);
+	}
+	return atoi(str);
+}
 
 #ifdef RSERV_DEBUG
 void printDump(void *b, int len) {
@@ -266,7 +298,7 @@ void sendResp(int s, int rsp) {
     printf("OUT.sendResp(void data)\n");
     printDump(&ph,sizeof(ph));
 #endif
-    send(s,&ph,sizeof(ph),0);
+    send(s,(char*)&ph,sizeof(ph),0);
 }
 
 char *getParseName(int n) {
@@ -303,14 +335,22 @@ rlen_t getStorageSize(SEXP x) {
     switch (t) {
     case LISTSXP:
     case LANGSXP:
-		len+=getStorageSize(CAR(x));
-		len+=getStorageSize(CDR(x));
-		len+=getStorageSize(TAG(x));
+		{
+			SEXP l = x;
+			int tags = 0, n = 0;
+			while (l != R_NilValue) {
+				len+=getStorageSize(CAR(x)); tags+=getStorageSize(TAG(x)); n++;
+				l = CDR(l);
+			}
+			if (tags>4*n) len+=tags; /* use tagged list */
+		}
 		break;
     case CLOSXP:
 		len+=getStorageSize(FORMALS(x));
 		len+=getStorageSize(BODY(x));
 		break;
+	case CPLXSXP:
+		len+=tl*16; break;
     case REALSXP:
 		len+=tl*8; break;
     case INTSXP:
@@ -323,9 +363,10 @@ rlen_t getStorageSize(SEXP x) {
 			len+=4;	
 		break;
 		
+    case SYMSXP:
     case CHARSXP:
 		{
-			char *ct=(char*)STRING_PTR(x);
+			char *ct=(char*) ((t==CHARSXP)?STRING_PTR(x):STRING_PTR(PRINTNAME(x)));
 			if (!ct)
 				len+=4;
 			else {
@@ -335,12 +376,7 @@ rlen_t getStorageSize(SEXP x) {
 			}
 		}
 		break;
-    case SYMSXP:
-		len+=getStorageSize(PRINTNAME(x));
-		break;
     case STRSXP:
-		if (tl==1)
-			return getStorageSize(VECTOR_ELT(x,0));
     case EXPRSXP:
     case VECSXP:
 		{
@@ -350,6 +386,9 @@ rlen_t getStorageSize(SEXP x) {
 				i++;
 			}
 		}
+		break;
+	case S4SXP:
+		/* S4 really has the payload in attributes, so it doesn't occupy anything */
 		break;
     default:
 		len+=4; /* unknown types are simply stored as int */
@@ -387,27 +426,27 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		buf++;
     }
     
-    if (t==LISTSXP) {
-		*buf=itop(XT_LIST|hasAttr);
+    if (t==LISTSXP || t==LANGSXP) {
+		SEXP l = x;
+		int tags = 0;
+		while (l != R_NilValue) {
+			if (TAG(l) != R_NilValue) tags++;
+			l = CDR(l);
+		}
+		/* note that we are using the fact that XT_LANG_xx=XT_LIST_xx+2 */
+		*buf=itop((((t==LISTSXP)?0:2)+(tags?XT_LIST_TAG:XT_LIST_NOTAG))|hasAttr);
 		buf++;
 		attrFixup;
-		buf=storeSEXP(buf,CAR(x));
-		buf=storeSEXP(buf,CDR(x));    
-		buf=storeSEXP(buf,TAG(x));  /* since 1.22 (0.1-5) we store TAG as well */
+		l=x;
+		while (l != R_NilValue) {			
+			buf = storeSEXP(buf, CAR(l));
+			if (tags)
+				buf = storeSEXP(buf, TAG(l));
+			l = CDR(l);
+		}
 		goto didit;
     }
     
-    if (t==LANGSXP) { /* LANG are simply special lists */
-		*buf=itop(XT_LANG|hasAttr);
-		buf++;
-		attrFixup;
-		/* before 1.22 (0.1-5) contents was ignored */
-		buf=storeSEXP(buf,CAR(x));
-		buf=storeSEXP(buf,CDR(x));
-		buf=storeSEXP(buf,TAG(x));  /* since 1.22 (0.1-5) we store TAG as well */
-		goto didit;
-    }
-	
     if (t==CLOSXP) { /* closures (send FORMALS and BODY) */
 		*buf=itop(XT_CLOS|hasAttr);
 		buf++;
@@ -424,6 +463,21 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		i=0;
 		while(i<LENGTH(x)) {
 			fixdcpy(buf,REAL(x)+i);
+			buf+=2; /* sizeof(double)=2*sizeof(int) */
+			i++;
+		}
+		goto didit;
+    }
+
+    if (t==CPLXSXP) {
+		*buf=itop(XT_ARRAY_CPLX|hasAttr);
+		buf++;
+		attrFixup;
+		i=0;
+		while(i<LENGTH(x)) {
+			fixdcpy(buf,&(COMPLEX(x)[i].r));
+			buf+=2; /* sizeof(double)=2*sizeof(int) */
+			fixdcpy(buf,&(COMPLEX(x)[i].i));
 			buf+=2; /* sizeof(double)=2*sizeof(int) */
 			i++;
 		}
@@ -463,19 +517,35 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		goto didit;
     }
     
-    if (t==EXPRSXP || t==VECSXP || t==STRSXP) {
-		if (t==STRSXP && LENGTH(x)==1) {
-			buf=storeSEXP(buf,VECTOR_ELT(x,0));
-			goto skipall; /* need to skip fixup since we didn't store anything */
-		} else {
-			*buf=itop(XT_VECTOR|hasAttr);
-			buf++;
-			attrFixup;
-			i=0;
-			while(i<LENGTH(x)) {
-				buf=storeSEXP(buf,VECTOR_ELT(x,i));
-				i++;
-			}
+	if (t==STRSXP) {
+		char *st;
+		*buf=itop(XT_ARRAY_STR|hasAttr);
+		buf++;
+		attrFixup;
+		/* leading int n; is not needed due to the choice of padding */
+		st = (char *)buf;
+		i=0;
+		while (i < LENGTH(x)) {
+			const char *cv = CHAR(STRING_ELT(x, i));
+			int l = strlen(cv);
+			strcpy(st, cv);
+			st += l+1;
+			i++;
+		}
+		/* pad with '\01' to make sure we can determine the number of elements */
+		while ((st-(char*)buf)&3) { *st=1; st++; }
+		buf=(unsigned int*)st;
+		goto didit;
+	}
+
+    if (t==EXPRSXP || t==VECSXP) {
+		*buf=itop(((t==EXPRSXP)?XT_VECTOR_EXP:XT_VECTOR)|hasAttr);
+		buf++;
+		attrFixup;
+		i=0;
+		while(i<LENGTH(x)) {
+			buf=storeSEXP(buf,VECTOR_ELT(x,i));
+			i++;
 		}
 		goto didit;
     }
@@ -492,26 +562,32 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		}
 		goto didit;
     }
-	
-    if (t==CHARSXP) {
-		int sl;
-		*buf=itop(XT_STR|hasAttr);
+
+    if (t==S4SXP) {
+		*buf=itop(XT_S4|hasAttr);
 		buf++;
 		attrFixup;
-		strcpy((char*)buf,(char*)STRING_PTR(x));
+		goto didit;		
+	}
+	
+    if (t==CHARSXP||t==SYMSXP) {
+		int sl;
+		const char *val;
+		if (t==CHARSXP) {
+			*buf=itop(XT_STR|hasAttr);
+			val = CHAR(x);
+		} else {
+			*buf=itop(XT_SYMNAME|hasAttr);
+			val = CHAR(PRINTNAME(x));
+		}
+		buf++;
+		attrFixup;
+		strcpy((char*)buf,val);
 		sl=strlen((char*)buf)+1;
 		while (sl&3) { /* pad by 0 to a length divisible by 4 (since 0.1-10) */
 			buf[sl]=0; sl++;
 		}
 		buf=(unsigned int*)(((char*)buf)+sl);
-		goto didit;
-    }
-	
-    if (t==SYMSXP) {
-		*buf=itop(XT_SYM|hasAttr);
-		buf++;
-		attrFixup;
-		buf=storeSEXP(buf,PRINTNAME(x));
 		goto didit;
     }
 	
@@ -529,7 +605,6 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
     } else
 		*preBuf=itop(SET_PAR(PAR_TYPE(ptoi(*preBuf)),dist(preBuf,buf)));
     
- skipall:
     return buf;
 }
 
@@ -537,8 +612,11 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 						  in fact Rserve binary transport supports
 						  more types than this function. */
 {
-    int t=TYPEOF(e);
-    int i;
+    int t = TYPEOF(e);
+    int i = 0;
+
+	if (ATTRIB(e) != R_NilValue)
+		printf("[*has attr*] ");
     
     if (t==NILSXP) {
 		printf("NULL value\n");
@@ -548,10 +626,22 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 		printf("language construct\n");
 		return;
     }
+    if (t==LISTSXP) {
+		SEXP l=e;
+		printf("dotted-pair list:\n");
+		while (l != R_NilValue) {
+			if (dumpLimit && i>dumpLimit) { printf("..."); break; };
+			if (TAG(l) != R_NilValue) {
+				printf("(TAG:"); printSEXP(TAG(l)); printf(") ");
+			}
+			printSEXP(CAR(l));
+			l=CDR(l);
+		}
+		return;
+    }
     if (t==REALSXP) {
 		if (LENGTH(e)>1) {
 			printf("Vector of real variables: ");
-			i=0;
 			while(i<LENGTH(e)) {
 				printf("%f",REAL(e)[i]);
 				if (i<LENGTH(e)-1) printf(", ");
@@ -565,9 +655,24 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 			printf("Real variable %f\n",*REAL(e));
 		return;
     }
+    if (t==CPLXSXP) {
+		if (LENGTH(e)>1) {
+			printf("Vector of complex variables: ");
+			while(i<LENGTH(e)) {
+				printf("%f+%fi",COMPLEX(e)[i].r,COMPLEX(e)[i].i);
+				if (i<LENGTH(e)-1) printf(", ");
+				if (dumpLimit && i>dumpLimit) {
+					printf("..."); break;
+				}
+				i++;
+			}
+			putchar('\n');
+		} else
+			printf("Complex variable %f+%fi\n",COMPLEX(e)[0].r,COMPLEX(e)[0].i);
+		return;
+    }
     if (t==RAWSXP) {
 		printf("Raw vector: ");
-		i=0;
 		while(i<LENGTH(e)) {
 			printf("%02x",((unsigned int)((unsigned char*)RAW(e))[i])&0xff);
 			if (i<LENGTH(e)-1) printf(" ");
@@ -581,7 +686,6 @@ void printSEXP(SEXP e) /* merely for debugging purposes
     }
     if (t==EXPRSXP) {
 		printf("Vector of %d expressions:\n",LENGTH(e));
-		i=0;
 		while(i<LENGTH(e)) {
 			if (dumpLimit && i>dumpLimit) { printf("..."); break; };
 			printSEXP(VECTOR_ELT(e,i));
@@ -591,7 +695,6 @@ void printSEXP(SEXP e) /* merely for debugging purposes
     }
     if (t==INTSXP) {
 		printf("Vector of %d integers:\n",LENGTH(e));
-		i=0;
 		while(i<LENGTH(e)) {
 			if (dumpLimit && i>dumpLimit) { printf("..."); break; }
 			printf("%d",INTEGER(e)[i]);
@@ -603,7 +706,6 @@ void printSEXP(SEXP e) /* merely for debugging purposes
     }
     if (t==VECSXP) {
 		printf("Vector of %d fields:\n",LENGTH(e));
-		i=0;
 		while(i<LENGTH(e)) {
 			if (dumpLimit && i>dumpLimit) { printf("..."); break; };
 			printSEXP(VECTOR_ELT(e,i));
@@ -612,7 +714,6 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 		return;
     }
     if (t==STRSXP) {
-		i=0;
 		printf("String vector of length %d:\n",LENGTH(e));
 		while(i<LENGTH(e)) {
 			if (dumpLimit && i>dumpLimit) { printf("..."); break; };
@@ -628,6 +729,10 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 		printf("Symbol, name: "); printSEXP(PRINTNAME(e));
 		return;
     }
+    if (t==S4SXP) {
+		printf("S4 object\n");
+		return;
+    }
     printf("Unknown type: %d\n",t);
 }
 
@@ -638,23 +743,41 @@ void printSEXP(SEXP e) /* merely for debugging purposes
    (more precisely it points to the next stored SEXP). */
 SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 {
-    unsigned int *b=*buf;
+    unsigned int *b=*buf, *pab=*buf;
     char *c,*cc;
-    SEXP val=0;
+    SEXP val=0, vatt=0;
     int ty=PAR_TYPE(ptoi(*b));
     rlen_t ln=PAR_LEN(ptoi(*b));
     int i,j,l;
     
     if (IS_LARGE(ty)) {
-		ty&=0xbf;
+		ty^=XT_LARGE;
 		b++;
 		ln|=(ptoi(*b))<<24;
     }
 #ifdef RSERV_DEBUG
-    printf("decode: type=%x, len=%ld\n", ty, (long)ln);
+    printf("decode: type=%d, len=%ld\n", ty, (long)ln);
 #endif
     b++;
-    
+    pab=b; /* pre-attr b */
+
+	if (ty&XT_HAS_ATTR) {
+#ifdef RSERV_DEBUG
+		printf(" - has attributes\n");
+#endif
+		*buf=b;
+		vatt=decode_to_SEXP(buf, UPC);
+		b=*buf;
+		ty=ty^XT_HAS_ATTR;
+#ifdef RSERV_DEBUG
+		printf(" - returned from attributes(@%x)\n", (int)&buf);
+#endif
+		ln -= (((char*)b) - ((char*)pab)); /* adjust length */
+	}
+
+	/* b = beginning of the SEXP data (after attrs)
+	   pab = beginning before attrs (=just behind the heaer)
+	   ln = length of th SEX payload (w/o attr) */
     switch(ty) {
     case XT_INT:
     case XT_ARRAY_INT:
@@ -678,7 +801,17 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		}
 		*buf=b;
 		break;
-    case XT_STR:
+    case XT_ARRAY_CPLX:
+		l=ln/16;
+		PROTECT(val=allocVector(CPLXSXP,l)); (*UPC)++;
+		i=0;
+		while (i<l) {
+			fixdcpy(&(COMPLEX(val)[i].r),b); b+=2;
+			fixdcpy(&(COMPLEX(val)[i].i),b); b+=2;
+			i++;
+		}
+		*buf=b;
+		break;
     case XT_ARRAY_STR:
 		i=j=0;
 		c=(char*)(b);
@@ -696,17 +829,87 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 			}
 			c++; i++;
 		}
-		*buf=(unsigned int*)cc;
+		*buf=(unsigned int*)((char*)b + ln);
 		break;
 	case XT_RAW:
 		i=ptoi(*b);
 		b++;
 		PROTECT(val=allocVector(RAWSXP, i)); (*UPC)++;
 		memcpy(RAW(val), b, i);
-		b+=ln/4 - 1; /* ln will include the length field */
-		*buf=b;
+		*buf=(unsigned int*)((char*)b + ln);
 		break;
+	case XT_VECTOR:
+	case XT_VECTOR_STR:
+		{
+			unsigned char *ie = (unsigned char*) b + ln;
+			int n=0;
+			SEXP lh = R_NilValue;
+			*buf=b;
+			while ((unsigned char*)*buf < ie) {
+				SEXP v = decode_to_SEXP(buf, UPC);
+				lh = CONS(v, lh);
+				n++;
+			}
+			printf(" vector, %d elements\n", n);
+			val = allocVector((ty==XT_VECTOR)?VECSXP:STRSXP, n);
+			while (n>0) {
+				n--;
+				SET_ELEMENT(val, n, CAR(lh));
+				lh=CDR(lh);
+			}
+			printf(" end of vector %x/%x\n", (int) *buf, (int) ie);
+			break;
+		}
+
+	case XT_STR:
+	case XT_SYMNAME:
+		/* i=ptoi(*b);
+		   b++; */
+		printf(" string/symbol(%d) '%s'\n", ty, (char*)b);
+		{
+			char *c = (char*) b;
+			if (ty==XT_STR)
+				val=mkChar(c);
+			else
+				val=install(c);
+		}
+		*buf=(unsigned int*)((char*)b + ln);
+		break;
+	case XT_LIST_NOTAG:
+	case XT_LIST_TAG:
+	case XT_LANG_NOTAG:
+	case XT_LANG_TAG:
+		{
+			SEXP vnext = R_NilValue, vtail = 0;
+			unsigned char *ie = (unsigned char*) b + ln;
+			val = R_NilValue;
+			*buf=b;
+			while ((unsigned char*)*buf < ie) {
+				printf(" el %08x of %08x\n", (unsigned int)*buf, (unsigned int) ie);
+				SEXP el = decode_to_SEXP(buf, UPC);
+				SEXP ea = 0;
+				if (ty==XT_LANG_TAG || ty==XT_LIST_TAG) {
+					printf(" tag %08x of %08x\n", (unsigned int)*buf, (unsigned int) ie);
+					ea = decode_to_SEXP(buf, UPC);
+				}
+				if (ty==XT_LANG_TAG || ty==XT_LANG_NOTAG)
+					vnext = LCONS(el, R_NilValue);
+				else
+					vnext = CONS(el, R_NilValue);
+				if (ea) SET_TAG(vnext, ea);
+				if (vtail)
+					SETCDR(vtail, vnext);
+				else
+					val = vnext;
+				vtail = vnext;				   
+			}
+			break;
+		}
+	default:
+		error("unsupported type %d\n", ty);
+		*buf=(unsigned int*)((char*)b + ln);
     }
+	if (vatt) SET_ATTRIB(val, vatt);
     return val;
 }
 
@@ -740,15 +943,15 @@ void sendRespData(int s, int rsp, int len, void *buf) {
     printDump(buf,len);
 #endif
     
-    send(s,&ph,sizeof(ph),0);
-    send(s,buf,len,0);
+    send(s,(char*)&ph,sizeof(ph),0);
+    send(s,(char*)buf,len,0);
 }
 
 /* initial ID string */
 #ifdef FORCE_V0100
 char *IDstring="Rsrv0100QAP1\r\n\r\n--------------\r\n";
 #else
-char *IDstring="Rsrv0102QAP1\r\n\r\n--------------\r\n";
+char *IDstring="Rsrv0103QAP1\r\n\r\n--------------\r\n";
 #endif
 
 /* require authentication flag (default: no) */
@@ -802,7 +1005,7 @@ int loadConfig(char *fn)
 				localonly=(*p=='1' || *p=='y' || *p=='e')?0:1;
 			if (!strcmp(c,"port")) {
 				if (*p) {
-					int np=atoi(p);
+					int np=satoi(p);
 					if (np>0) port=np;
 				}
 			}
@@ -843,15 +1046,23 @@ int loadConfig(char *fn)
 			}
 #ifdef unix
 			if (!strcmp(c,"uid") && *p) {
-				int nuid=atoi(p);
+				int nuid=satoi(p);
 				if (setuid(nuid))
 					fprintf(stderr,"setuid(%d): failed. no user switch performed.",nuid);
 			}
 			if (!strcmp(c,"gid") && *p) {
-				int ngid=atoi(p);
+				int ngid=satoi(p);
 				if (setgid(ngid))
 					fprintf(stderr,"setgid(%d): failed. no group switch performed.",ngid);
 			}
+			if (!strcmp(c,"chroot") && *p) {
+				if (chroot(p)) {
+					perror("chroot");
+					fprintf(stderr,"chroot(\"%s\"): failed.", p);
+				}
+			}
+			if (!strcmp(c,"umask") && *p)
+				umask_value=satoi(p);
 #endif
 			if (!strcmp(c,"allow")) {
 				if (*p) {
@@ -882,6 +1093,10 @@ int loadConfig(char *fn)
 					localSocketName=(char*)malloc(strlen(p)+1);
 					strcpy(localSocketName,p);
 				} else localSocketName=0;
+			}
+			if (!strcmp(c,"sockmod")) {
+				if (*p)
+					localSocketMode=satoi(p);
 			}
 			if (!strcmp(c,"pwdfile")) {
 				if (*p) {
@@ -1054,7 +1269,7 @@ int detach_session(SOCKET s) {
 		return -1;
 	}
 
-    setsockopt(ss,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    setsockopt(ss,SOL_SOCKET,SO_REUSEADDR,(const char*)&reuse,sizeof(reuse));
 
 #ifdef Win32
 	while ((port = (((int) rand()) & 0x7fff)+32768)>65000) {};
@@ -1135,7 +1350,7 @@ SOCKET resume_session() {
 			closesocket(s);
 		} else {
 			int n=0;
-			if ((n=recv(s, clk, 32, 0)) != 32) {
+			if ((n=recv(s, (char*)clk, 32, 0)) != 32) {
 #ifdef RSERV_DEBUG
 				printf("session: expected 32, got %d = closing\n", n);
 #endif
@@ -1256,8 +1471,10 @@ decl_sbthread newConn(void *thp) {
 #ifdef RSERV_DEBUG
     printf("sending ID string.\n");
 #endif
-    send(s,buf,32,0);
-    while((n=recv(s,&ph,sizeof(ph),0))==sizeof(ph)) {
+    send(s,(char*)buf,32,0);
+    while((n=recv(s,(char*)&ph,sizeof(ph),0))==sizeof(ph)) {
+		size_t plen = 0;
+		SEXP pp = R_NilValue; /* packet payload (as a raw vector) for special commands */
 #ifdef RSERV_DEBUG
 		printf("\nheader read result: %d\n",n);
 		if (n>0) printDump(&ph,n);
@@ -1265,20 +1482,41 @@ decl_sbthread newConn(void *thp) {
 		ph.len=ptoi(ph.len);
 		ph.cmd=ptoi(ph.cmd);
 		ph.dof=ptoi(ph.dof);
+#ifdef __LP64__
+		ph.res=ptoi(ph.res);
+		plen = ph.len;
+		plen |= (((size_t) ph.res) << 32);
+#else
+		plen = ph.len;
+#endif
 		process=0;
 		pars=0;
-		if (ph.len>0) {
+
+		if ((ph.cmd & CMD_SPECIAL_MASK) == CMD_SPECIAL_MASK) {
+			/* this is a very special case - we load the packet payload into a raw vector directly to prevent unnecessaru copying */
+			pp = allocVector(RAWSXP, plen);
+			char *pbuf = (char*) RAW(pp);
+			size_t i = 0;
+#ifdef RSERV_DEBUG
+			printf("loading (raw) buffer (awaiting %d bytes)\n",plen);
+#endif
+			while((n = recv(s,(char*)(pbuf+i),plen-i,0))) {
+				if (n > 0) i+=n;
+				if (i >= plen || n < 1) break;
+			}
+		} else
+		if (plen>0) {
 			unsigned int phead;
 			int parType=0;
 			rlen_t parLen=0;
 	    
-			if (!maxInBuf || ph.len<maxInBuf) {
-				if (ph.len>=inBuf) {
+			if (!maxInBuf || plen<maxInBuf) {
+				if (plen>=inBuf) {
 #ifdef RSERV_DEBUG
-					printf("resizing input buffer (was %d, need %d) to %d\n",inBuf,ph.len,((ph.len|0x1fff)+1));
+					printf("resizing input buffer (was %d, need %d) to %d\n",inBuf,plen,((plen|0x1fff)+1));
 #endif
 					free(buf); /* the buffer is just a scratchpad, so we don't need to use realloc */
-					buf=(char*)malloc(inBuf=((ph.len|0x1fff)+1)); /* use 8kB granularity */
+					buf=(char*)malloc(inBuf=((plen|0x1fff)+1)); /* use 8kB granularity */
 					if (!buf) {
 #ifdef RSERV_DEBUG
 						fprintf(stderr,"FATAL: out of memory while resizing buffer to %d,\n",inBuf);
@@ -1290,23 +1528,23 @@ decl_sbthread newConn(void *thp) {
 					}	    
 				}
 #ifdef RSERV_DEBUG
-				printf("loading buffer (awaiting %d bytes)\n",ph.len);
+				printf("loading buffer (awaiting %d bytes)\n",plen);
 #endif
 				i=0;
-				while((n=recv(s,buf+i,ph.len-i,0))) {
+				while((n=recv(s,(char*)(buf+i),plen-i,0))) {
 					if (n>0) i+=n;
-					if (i>=ph.len || n<1) break;
+					if (i>=plen || n<1) break;
 				}
-				if (i<ph.len) break;
-				memset(buf+ph.len,0,8);
+				if (i<plen) break;
+				memset(buf+plen,0,8);
 		
 				unaligned=0;
 #ifdef RSERV_DEBUG
 				printf("parsing parameters\n");
-				if (ph.len>0) printDump(buf,ph.len);
+				if (plen>0) printDump(buf,plen);
 #endif
 				c=buf+ph.dof;
-				while((c<buf+ph.dof+ph.len) && (phead=ptoi(*((unsigned int*)c)))) {
+				while((c<buf+ph.dof+plen) && (phead=ptoi(*((unsigned int*)c)))) {
 					rlen_t headSize=4;
 					parType=PAR_TYPE(phead);
 					parLen=PAR_LEN(phead);
@@ -1339,9 +1577,9 @@ decl_sbthread newConn(void *thp) {
 					if (pars>15) break;
 				} /* we don't parse more than 16 parameters */
 			} else {
-				printf("discarding buffer because too big (awaiting %d bytes)\n",ph.len);
-				i=ph.len;
-				while((n=recv(s,buf,i>inBuf?inBuf:i,0))) {
+				printf("discarding buffer because too big (awaiting %d bytes)\n",plen);
+				size_t i=plen;
+				while((n=recv(s,(char*)buf,i>inBuf?inBuf:i,0))) {
 					if (n>0) i-=n;
 					if (i<1 || n<1) break;
 				}
@@ -1467,7 +1705,7 @@ decl_sbthread newConn(void *thp) {
 			if (pars<1 || parT[0]!=DT_INT) 
 				sendResp(s,SET_STAT(RESP_ERR,ERR_inv_par));
 			else {
-				rlen_t ns=ptoi(*(unsigned int*)parP);
+				rlen_t ns=ptoi(((unsigned int*)parP)[0]);
 #ifdef RSERV_DEBUG
 				printf(">>CMD_setSendBuf to %ld bytes.\n", (long)ns);
 #endif
@@ -1552,7 +1790,7 @@ decl_sbthread newConn(void *thp) {
 				else {
 					fbufl=sfbufSize; fbuf=sfbuf;
 					if (pars==1 && parT[0]==DT_INT)
-						fbufl=ptoi(*(unsigned int*)parP[0]);
+						fbufl=ptoi(((unsigned int*)parP)[0]);
 #ifdef RSERV_DEBUG
 					printf(">>CMD_readFile(%d)\n",fbufl);
 #endif
@@ -1676,6 +1914,42 @@ decl_sbthread newConn(void *thp) {
 			}
 		}
 		
+		if (ph.cmd==CMD_serEval || ph.cmd==CMD_serEEval || ph.cmd == CMD_serAssign) {
+			int Rerr = 0;
+			SEXP us = R_tryEval(LCONS(install("unserialize"),CONS(pp,R_NilValue)), R_GlobalEnv, &Rerr);
+			PROTECT(us);
+			process = 1;
+			if (Rerr == 0) {
+				if (ph.cmd == CMD_serAssign) {
+					if (TYPEOF(us) != VECSXP || LENGTH(us) < 2) {
+						sendResp(s, SET_STAT(RESP_ERR, ERR_inv_par));
+					} else {
+						R_tryEval(LCONS(install("<-"),CONS(VECTOR_ELT(us, 0), CONS(VECTOR_ELT(us, 1), R_NilValue))), R_GlobalEnv, &Rerr);
+						if (Rerr == 0)
+							sendResp(s, RESP_OK);
+						else
+							sendResp(s, SET_STAT(RESP_ERR, Rerr));
+					}
+				} else {
+					SEXP ev = R_tryEval(us, R_GlobalEnv, &Rerr);
+					if (Rerr == 0 && ph.cmd == CMD_serEEval) /* one more round */
+						ev = R_tryEval(ev, R_GlobalEnv, &Rerr);
+					PROTECT(ev);
+					if (Rerr == 0) {
+						SEXP sr = R_tryEval(LCONS(install("serialize"),CONS(ev, CONS(R_NilValue, R_NilValue))), R_GlobalEnv, &Rerr);
+						if (Rerr == 0 && TYPEOF(sr) == RAWSXP) {
+							sendRespData(s, RESP_OK, LENGTH(sr), RAW(sr));
+						} else if (Rerr == 0) Rerr = -2;
+					}
+					UNPROTECT(1);
+				}
+				UNPROTECT(1);
+				if (Rerr) {
+					sendResp(s, SET_STAT(RESP_ERR, Rerr));
+				}
+			}
+		}
+
 		if (ph.cmd==CMD_voidEval || ph.cmd==CMD_eval || ph.cmd==CMD_detachedVoidEval) {
 			process=1;
 			if (pars<1 || parT[0]!=DT_STRING) 
@@ -1918,11 +2192,13 @@ void serverLoop() {
 	} else
 		ss=FCF("open socket",socket(AF_INET,SOCK_STREAM,0));
     reuse=1; /* enable socket address reusage */
-    setsockopt(ss,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    setsockopt(ss,SOL_SOCKET,SO_REUSEADDR,(const char*)&reuse,sizeof(reuse));
 #ifdef unix
-    if (localSocketName)
+    if (localSocketName) {
 		FCF("bind",bind(ss,(SA*) &lusa, sizeof(lusa)));    
-    else
+		if (localSocketMode)
+			chmod(localSocketName, localSocketMode);
+	} else
 #endif
 		FCF("bind",bind(ss,build_sin(&ssa,0,port),sizeof(ssa)));
     
@@ -1996,10 +2272,19 @@ extern int Rf_initEmbeddedR(int, char**);
 /* main function - start Rserve */
 int main(int argc, char **argv)
 {
-    int stat,i;
-    
+    int stat,i;    
+	rserve_rev[0]=0;
+	{ /* cut out the SVN revision from the Id string */
+		const char *c = strstr(rserve_ver_id, ".c ");
+		if (c) {
+			const char *d = c + 3;
+			c = d; while (*c && *c != ' ') c++;
+			strncpy(rserve_rev, d, c - d);
+		}
+	}
+
 #ifdef RSERV_DEBUG
-    printf("Rserve %d.%d-%d (C)Copyright 2002,3 Simon Urbanek\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255);
+    printf("Rserve %d.%d-%d (%s) (C)Copyright 2002-8 Simon Urbanek\n%s\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255, rserve_rev, rserve_ver_id);
 #endif
     if (!isByteSexOk()) {
 		printf("FATAL ERROR: This program was not correctly compiled - the endianess is wrong!\nUse -DSWAPEND when compiling on PPC or similar platforms.\n");
@@ -2021,7 +2306,7 @@ int main(int argc, char **argv)
 				if (i+1==argc)
 					fprintf(stderr,"Missing port specification for --RS-port.\n");
 				else {
-					port=atoi(argv[++i]);
+					port=satoi(argv[++i]);
 					if (port<1) {
 						fprintf(stderr,"Invalid port number in --RS-port, using default port.\n");
 						port=default_Rsrv_port;
@@ -2033,7 +2318,7 @@ int main(int argc, char **argv)
 				if (i+1==argc)
 					fprintf(stderr,"Missing limit specification for --RS-dumplimit.\n");
 				else
-					dumpLimit=atoi(argv[++i]);
+					dumpLimit=satoi(argv[++i]);
 			}
 			if (!strcmp(argv[i]+2,"RS-socket")) {
 				isRSP=1;
@@ -2065,7 +2350,7 @@ int main(int argc, char **argv)
 				return 0;	       
 			}
 			if (!strcmp(argv[i]+2,"version")) {
-				printf("Rserve v%d.%d-%d\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255);
+				printf("Rserve v%d.%d-%d (%s)\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255,rserve_rev);
 			}
 			if (!strcmp(argv[i]+2,"help")) {
 				printf("Usage: R CMD Rserve [<options>]\n\nOptions: --help  this help screen\n --version  prints Rserve version (also passed to R)\n --RS-port <port> listen on the specified TCP port\n --RS-socket <socket> use specified local (unix) socket instead of TCP/IP.\n --RS-workdir <path> use specified working directory root for connections.\n --RS-conf <file> load additional config file.\n --RS-settings  dumps current settings of the Rserve\n\nAll other options are passed to the R engine.\n\n");
@@ -2079,7 +2364,11 @@ int main(int argc, char **argv)
 			top_argv[top_argc++]=argv[i];
 		i++;
     }
-    
+
+#if R_VERSION >= R_Version(2,5,0)
+	R_SignalHandlers = 0; /* disable signal handlers */
+#endif
+
     stat=Rf_initEmbeddedR(top_argc,top_argv);
     if (stat<0) {
 		printf("Failed to initialize embedded R! (stat=%d)\n",stat);
@@ -2115,7 +2404,9 @@ int main(int argc, char **argv)
     
     setsid();
     chdir("/");
-    umask(0);
+#endif
+#ifdef unix
+    umask(umask_value);
 #endif
     
     serverLoop();

@@ -1,72 +1,10 @@
 # Process this file with autoconf to produce a configure script.
-AC_INIT([Rserve],[0.4],[Simon.Urbanek@r-project.org])
-AC_CONFIG_SRCDIR([src/Rserv.c])
-AC_CONFIG_HEADER([src/config.h])
+AC_INIT([Rserve-cxx-client],[0.1],[Simon.Urbanek@r-project.org])
+AC_CONFIG_SRCDIR([Rconnection.cc])
+AC_CONFIG_HEADER([config.h])
 
-# find R home and set CC/CFLAGS
-: ${R_HOME=`R RHOME`}
-if test -z "${R_HOME}"; then
-  echo "could not determine R_HOME"
-  exit 1
-fi
-
-AC_ARG_WITH([server],
-	AS_HELP_STRING(--with-server,compile Rserve server (default is @<:@yes@:>@). Given that this is the main functionality of Rserve, the only reason to disable the server is to configure R or C++ client separately.),
-	[with_server=$withval], [with_server=yes])
-
-AC_ARG_WITH([client],
-	AS_HELP_STRING(--with-client,compile additional C/C++ Rserve client (default is @<:@no@:>@). The client can be always compiled manually regardless of this setting.),
-	[with_client=$withval], [with_client=no])
-
-RLD=`${R_HOME}/bin/R CMD config --ldflags 2>/dev/null`
-has_R_shlib=no
-if test -n "$RLD"; then
-   has_R_shlib=yes
-fi
-
-AC_MSG_CHECKING([whether to compile the server])
-if test "${with_server}" = yes; then
-   AC_MSG_RESULT(yes)
-   if test "${has_R_shlib}" = no; then
-      AC_MSG_ERROR([R was configured without --enable-R-shlib
-
-*** Rserve requires R shared library.                                  ***
-*** Please install libR.so or compile R with --enable-R-shlib support  ***
-
- Alternatively use --without-server if you wish to build only Rserve client.
-
-])
-   fi
-else
-   AC_MSG_RESULT(no)
-fi
-
-AC_MSG_CHECKING([whether to compile the client])
-if test "${with_client}" = yes; then
-   AC_MSG_RESULT(yes)
-else
-   AC_MSG_RESULT(no)
-fi
-
-AM_CONDITIONAL(WITH_SERVER, [test "x${with_server}" = xyes])
-AM_CONDITIONAL(WITH_CLIENT, [test "x${with_client}" = xyes])
-
-CC=`${R_HOME}/bin/R CMD config CC`;
-CXX=`${R_HOME}/bin/R CMD config CXX`;
-CPPFLAGS="${CPPFLAGS} ${PKG_CPPFLAGS}"
-CFLAGS=`${R_HOME}/bin/R CMD config CFLAGS`
-CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
-RINC=`${R_HOME}/bin/R CMD config --cppflags`
-AC_SUBST(R_HOME)
-AC_SUBST(RINC)
-AC_SUBST(RLD)
-
-# Checks for programs.
 AC_PROG_CC
-
-# Checks for libraries.
-
-# Checks for header files.
+AC_PROG_CXX
 AC_HEADER_STDC
 AC_HEADER_SYS_WAIT
 AC_CHECK_HEADERS([string.h memory.h sys/time.h unistd.h])
@@ -145,6 +83,5 @@ fi
 # on some platforms libR expects dl code in the binary
 AC_CHECK_LIB(dl, dlopen)
 
-AC_CONFIG_FILES([src/Makefile])
-AC_CONFIG_FILES([src/client/cxx/Makefile])
+AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

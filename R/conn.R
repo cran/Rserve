@@ -1,3 +1,35 @@
+Rserve <- function(debug=FALSE, port=6311, args=NULL) {
+  if (.Platform$OS.type == "windows") {
+    ffn <- if (debug) "Rserve_d.exe" else "Rserve.exe"
+    fn <- system.file(package="Rserve", ffn)
+    if (!nchar(fn) || !file.exists(fn))
+      stop("Cannot find ", ffn)
+    else {
+      if ( port != 6311 ) fn <- paste( fn, "--RS-port", port )
+      if ( !is.null(args) ) fn <- paste(fn, paste(args, collapse=' '))
+
+      pad <- paste(R.home(),"\\bin;",sep='')
+      if (!exists("Sys.setenv")) Sys.setenv <- Sys.putenv
+      if (charmatch(pad, Sys.getenv("PATH"), nomatch=0) == 0)
+        Sys.setenv(PATH=paste(pad, Sys.getenv("PATH"), sep=''))
+      
+      cat("Starting Rserve...\n", fn)
+      system(fn, wait=FALSE)
+      return(invisible(NULL))
+    }
+  }
+  name <- if (!debug) "Rserve-bin.so" else "Rserve-dbg.so"
+  fn <- system.file(package="Rserve", "libs", .Platform$r_arch, name)
+  if (!nchar(fn)) fn <- if (!debug) "Rserve" else "Rserve.dbg"
+  if ( port != 6311 ) fn <- paste( fn, "--RS-port", port )
+  if ( !is.null(args) ) fn <- paste(fn, paste(args, collapse=' '))
+  cmd <- paste(file.path(R.home(),"bin","R"),"CMD",fn)
+  cat("Starting Rserve on port", port, ":\n",cmd,"\n\n")
+  if (debug)
+    cat("Note: debug version of Rserve doesn't daemonize so your R session will be blocked until you shut down Rserve.\n")
+  system(cmd)
+}
+
 RSconnect <- function(host="localhost", port=6311) {
   c <- socketConnection(host,port,open="a+b",blocking=TRUE)
   a <- readBin(c,"raw",32)
@@ -7,7 +39,34 @@ RSconnect <- function(host="localhost", port=6311) {
   return( c )
 }
 
-RSeval <- function(c, cmd) {
+RSeval <- function(c, expr) {
+  r <- if (is.character(expr)) serialize(parse(text=paste("{",paste(expr,collapse="\n"),"}"))[[1]],NULL) else serialize(expr, NULL)
+  writeBin(c(0xf5L, length(r), 0L, 0L), c, endian="little")
+  writeBin(r, c)
+  b <- readBin(c,"int",4,signed=FALSE,endian="little")
+  if (length(b)<4 || b[1] != 65537L) stop("remote evaluation failed")
+  unserialize(readBin(c,"raw",b[2]))
+}
+
+RSassign <- function (c, obj, name = deparse(substitute(obj))) {
+  r <- serialize(list(name, obj), NULL)
+  writeBin(c(0xf6L,length(r),0L,0L), c, endian="little")
+  writeBin(r, c)
+  b <- readBin(c,"int",4,signed=FALSE,endian="little")
+  if (length(b)<4 || b[1] != 65537L)
+    stop("remote assign failed")
+  invisible(obj)
+}
+
+RSclose <- function(c) close(c)
+
+#--- the following code is VERY UNSAFE! It was used for a limited
+#    purpose and donated by a good soul, but exact bitwise operations
+#    are not supported by R, so it works only in a small range of
+#    supported data. Also it makes some assumptions about the setup.
+
+
+RSeval.old <- function(c, cmd) {
   r <- paste("serialize({", cmd[1], "},NULL)")
   sc <- charToRaw(as.character(r)[1])
   l <- length(sc) + 1
@@ -59,7 +118,7 @@ RSeval <- function(c, cmd) {
   r
 }
 
-RSassign <- function ( c, obj, name = deparse(substitute(obj)) ) {
+RSassign.old <- function ( c, obj, name = deparse(substitute(obj)) ) {
   so <- serialize(list(name=name, obj=obj), NULL)
   large <- (length(so) > 0x800000)
   if (large) stop("Cannot assign objects larger than 8MB.")
@@ -107,9 +166,8 @@ RSassign <- function ( c, obj, name = deparse(substitute(obj)) ) {
 RSdetach <- function( c ) RSevalDetach( c, "" )
 
 RSevalDetach <- function( c, cmd="" ) {
-  host <- RSeval( c, "Sys.getenv()[[\"HOST\"]]" )
-  if ( host == Sys.getenv()[["HOST"]] ) host <- "localhost"
-  cwd <- RSeval( c, "getwd()" )
+  # retrieve the host name from the connection (possibly unsafe!)
+  host <- substr(strsplit(summary(c)$description,":")[[1]][1],3,999)
   if ( cmd != "" ) {
     r <- paste("serialize({", cmd[1], "},NULL)")
     l <- nchar(r[1])+1
@@ -132,7 +190,7 @@ RSevalDetach <- function( c, cmd="" ) {
   readBin(c,"raw",4) ## this should be DT_BYTESTREAM
   key <- readBin(c,"raw",msgLen-12)
   RSclose(c)
-  list( port=port, key=key, host=host, cwd=cwd )
+  list( port=port, key=key, host=host )
 }
 
 RSattach <- function(session) {
@@ -141,7 +199,6 @@ RSattach <- function(session) {
   b <- readBin(c,"int",4,signed=FALSE,endian="little")
   if (!length(b)) { close(c); stop("Rserve connection timed out and closed") }
   if (b[1]%%256 != 1) stop("Attach failed with error: ",b[1]%/%0x1000000)
-  RSeval( c, paste( "setwd(\"", session$cwd, "\");", sep="" ) )
   c
 }
 
@@ -159,36 +216,7 @@ RSlogin <- function(c, user, pwd, silent=FALSE) {
   invisible(b[1]%%256 == 1)
 }
 
-RSclose <- function(c) close(c)
-
-Rserve <- function(debug=FALSE, port=6311, args=NULL) {
-  if (.Platform$OS.type == "windows") {
-    ffn <- if (debug) "Rserve_d.exe" else "Rserve.exe"
-    fn <- system.file(package="Rserve", ffn)
-    if (!nchar(fn) || !file.exists(fn))
-      stop("Cannot find ", ffn)
-    else {
-      if ( port != 6311 ) fn <- paste( fn, "--RS-port", port )
-      if ( !is.null(args) ) fn <- paste(fn, paste(args, collapse=' '))
-
-      pad <- paste(R.home(),"\\bin;",sep='')
-      if (charmatch(pad, Sys.getenv("PATH"), nomatch=0) == 0)
-        Sys.putenv(PATH=paste(pad, Sys.getenv("PATH"), sep=''))
-      
-      cat("Stating Rserve...\n", fn)
-      system(fn, wait=FALSE)
-      return(invisible(NULL))
-    }
-  }
-  name <- if (!debug) "Rserve-bin.so" else "Rserve-dbg.so"
-  fn <- system.file(package="Rserve", "libs", .Platform$r_arch, name)
-  if (!nchar(fn)) fn <- if (!debug) "Rserve" else "Rserve.dbg"
-  if ( port != 6311 ) fn <- paste( fn, "--RS-port", port )
-  if ( !is.null(args) ) fn <- paste(fn, paste(args, collapse=' '))
-  cmd <- paste(file.path(R.home(),"bin","R"),"CMD",fn)
-  cat("Starting Rserve on port", port, ":\n",cmd,"\n\n")
-  if (debug)
-    cat("Note: debug version of Rserve doesn't daemonize so your R session will be blocked until you shut down Rserve.\n")
-  system(cmd)
+RSshutdown <- function(c, pwd=NULL) {
+  # FIXME: we ignore pwd and don't check error status
+  writeBin(as.integer(c(4, 0, 0, 0)), c, endian="little")
 }
-
