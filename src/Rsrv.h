@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rsrv.h 181 2006-11-30 15:00:56Z urbanek $
+ *  $Id: Rsrv.h 186 2006-11-30 21:28:07Z urbanek $
  */
 
 /* external defines:
@@ -27,7 +27,7 @@
 
 #include "config.h"
 
-#define RSRV_VER 0x000406 /* Rserve v0.4-6 */
+#define RSRV_VER 0x000407 /* Rserve v0.4-7 */
 
 #define default_Rsrv_port 6311
 
