@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 294 2010-08-18 15:43:35Z urbanek $
+ *  $Id: Rserv.c 303 2011-01-17 22:49:41Z urbanek $
  */
 
 /* external defines:
@@ -288,7 +288,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 294 2010-08-18 15:43:35Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 303 2011-01-17 22:49:41Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -2668,19 +2668,28 @@ void serverLoop() {
 					laddr=allowed_ips;
 				}
 				while (*laddr) if (sa->sa.sin_addr.s_addr==inet_addr(*(laddr++))) { allowed=1; break; };
-				if (allowed)
+				if (allowed) {
 #ifdef THREADED
 					sbthread_create(newConn,sa);
 #else
 				newConn(sa);
+#ifdef FORKED
+				/* when the child returns it means it's done (likely an error)
+				   but it is forked, so the only right thing to do is to exit */
+				if (is_child)
+					exit(2);
 #endif
-				else
+#endif
+				} else
 					closesocket(sa->s);
-			} else
+			} else { /* ---> remote enabled */
 #ifdef THREADED
 				sbthread_create(newConn,sa); 
 #else
-			newConn(sa);
+				newConn(sa);
+				if (is_child) /* same as above */
+					exit(2);
+			}
 #endif
 #ifdef unix
 		} else if (selRet > 0 && children) { /* one of the children signalled */
@@ -2777,7 +2786,7 @@ int main(int argc, char **argv)
 	}
 
 #ifdef RSERV_DEBUG
-    printf("Rserve %d.%d-%d (%s) (C)Copyright 2002-2010 Simon Urbanek\n%s\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255, rserve_rev, rserve_ver_id);
+    printf("Rserve %d.%d-%d (%s) (C)Copyright 2002-2011 Simon Urbanek\n%s\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255, rserve_rev, rserve_ver_id);
 #endif
     if (!isByteSexOk()) {
 		printf("FATAL ERROR: This program was not correctly compiled - the endianess is wrong!\nUse -DSWAPEND when compiling on PPC or similar platforms.\n");
