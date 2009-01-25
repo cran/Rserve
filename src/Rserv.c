@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 289 2010-05-24 14:53:25Z urbanek $
+ *  $Id: Rserv.c 294 2010-08-18 15:43:35Z urbanek $
  */
 
 /* external defines:
@@ -83,6 +83,7 @@ the use of DT_LARGE/XT_LARGE.
    auth required|disable [disable]
    plaintext enable|disable [disable] (strongly discouraged to enable)
    fileio enable|disable [enable]
+   interactive yes|no [yes] (the default may change to "no" in the future!)
 
    socket <unix-socket-name> [none]
    maxinbuf <size in kB> [262144 = 256MB]
@@ -279,13 +280,15 @@ int child_control = 0;  /* enable/disable the ability of children to send comman
 
 int maxSendBufSize = 0; /* max. sendbuf for auto-resize. 0=no limit */
 
+int Rsrv_interactive = 1; /* default for R_Interactive flag */
+
 #ifdef unix
 static int umask_value = 0;
 #endif
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 289 2010-05-24 14:53:25Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 294 2010-08-18 15:43:35Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -309,6 +312,9 @@ static const char *charsxp_to_current(SEXP s) {
 	return Rf_reEnc(CHAR(s), getCharCE(s), string_encoding, 0);
 }
 #endif
+
+/* this is the representation of NAs in strings. We chose 0xff since that should never occur in UTF-8 strings. If 0xff occurs in the beginning of a string anyway, it will be doubled to avoid misrepresentation. */
+static const unsigned char NaStringRepresentation[2] = { 255, 0 };
 
 static int set_string_encoding(const char *enc, int verbose) {
 #ifdef USE_ENCODING
@@ -592,24 +598,28 @@ static unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		goto didit;
     }
     
-	if (t==STRSXP) {
+	if (t == STRSXP) {
 		char *st;
-		*buf=itop(XT_ARRAY_STR|hasAttr);
+		int nx = LENGTH(x);
+		*buf = itop(XT_ARRAY_STR|hasAttr);
 		buf++;
 		attrFixup;
 		/* leading int n; is not needed due to the choice of padding */
 		st = (char *)buf;
-		i=0;
-		while (i < LENGTH(x)) {
+		for (i = 0; i < nx; i++) {
 			const char *cv = CHAR_FE(STRING_ELT(x, i));
 			int l = strlen(cv);
+			if (STRING_ELT(x, i) == R_NaString) {
+				cv = (const char*) NaStringRepresentation;
+				l = 1;
+			} else if ((unsigned char) cv[0] == NaStringRepresentation[0]) /* we will double the leading 0xff to avoid abiguity between NA and "\0xff" */
+				(st++)[0] = (char) NaStringRepresentation[0];
 			strcpy(st, cv);
-			st += l+1;
-			i++;
+			st += l + 1;
 		}
 		/* pad with '\01' to make sure we can determine the number of elements */
-		while ((st-(char*)buf)&3) { *st=1; st++; }
-		buf=(unsigned int*)st;
+		while ((st - (char*)buf) & 3) *(st++) = 1;
+		buf = (unsigned int*)st;
 		goto didit;
 	}
 
@@ -912,21 +922,33 @@ static SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		*buf=b;
 		break;
     case XT_ARRAY_STR:
-		i=j=0;
-		c=(char*)(b);
-		while(i<ln) {
-			if (!*c) j++;
-			c++;
-			i++; 
-		}
-		PROTECT(val = allocVector(STRSXP, j)); (*UPC)++;
-		i=j=0; c=(char*)b; cc=c;
-		while(i<ln) {
-			if (!*c) {
-				SET_STRING_ELT(val, j, mkRChar(cc));
-				j++; cc=c+1;
+	    	{
+			/* count the number of elements */
+			char *sen = (c = (char*)(b)) + ln;
+			j = 0;
+			while (c < sen) {
+				if (!*c) j++;
+				c++;
 			}
-			c++; i++;
+			
+			PROTECT(val = allocVector(STRSXP, j));
+			(*UPC)++;
+			j = 0; cc = c = (char*)b;
+			while (c < sen) {
+				SEXP sx;
+				if (!*c) {
+					if ((unsigned char)cc[0] == NaStringRepresentation[0]) {
+						if ((unsigned char)cc[1] == NaStringRepresentation[1])
+							sx = R_NaString;
+						else
+							sx = mkRChar(cc + 1);
+					} else sx = mkRChar(cc);
+					SET_STRING_ELT(val, j, sx);
+					j++;
+					cc = c + 1;
+				}
+				c++;
+			}
 		}
 		*buf=(unsigned int*)((char*)b + ln);
 		break;
@@ -937,7 +959,6 @@ static SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		*buf=(unsigned int*)((char*)b + ln);
 		break;
 	case XT_VECTOR:
-	case XT_VECTOR_STR: /* FIXME: really this will fail in R 2.9.0-devel because SET_ELEMENT only supports lists now. Given that XT_VECTOR_STR should not be used we may consider removing it ... */
 	case XT_VECTOR_EXP:
 		{
 			unsigned char *ie = (unsigned char*) b + ln;
@@ -1282,6 +1303,8 @@ static int loadConfig(char *fn)
 				pwdfile = (*p) ? strdup(p) : 0;
 			if (!strcmp(c,"auth"))
 				authReq=(*p=='1' || *p=='y' || *p=='r' || *p=='e') ? 1 : 0;
+			if (!strcmp(c,"interactive"))
+				Rsrv_interactive = (*p=='1' || *p=='y' || *p=='t' || *p=='e') ? 1 : 0;
 			if (!strcmp(c,"plaintext"))
 				usePlain=(*p=='1' || *p=='y' || *p=='e') ? 1 : 0;
 			if (!strcmp(c,"fileio"))
@@ -2819,12 +2842,12 @@ int main(int argc, char **argv)
 					loadConfig(argv[++i]);
 			}
 			if (!strcmp(argv[i]+2,"RS-settings")) {
-				printf("Rserve v%d.%d-%d\n\nconfig file: %s\nworking root: %s\nport: %d\nlocal socket: %s\nauthorization required: %s\nplain text password: %s\npasswords file: %s\nallow I/O: %s\nallow remote access: %s\ncontrol commands: %s\nmax.input buffer size: %d kB\n\n",
+				printf("Rserve v%d.%d-%d\n\nconfig file: %s\nworking root: %s\nport: %d\nlocal socket: %s\nauthorization required: %s\nplain text password: %s\npasswords file: %s\nallow I/O: %s\nallow remote access: %s\ncontrol commands: %s\ninteractive: %s\nmax.input buffer size: %d kB\n\n",
 					   RSRV_VER>>16, (RSRV_VER>>8)&255, RSRV_VER&255,
 					   CONFIG_FILE, workdir, port, localSocketName ? localSocketName : "[none, TCP/IP used]",
 					   authReq ? "yes" : "no", usePlain ? "allowed" : "not allowed", pwdfile ? pwdfile : "[none]",
 					   allowIO ? "yes" : "no", localonly ? "no" : "yes",
-					   child_control ? "yes" : "no", maxInBuf/1024);
+					   child_control ? "yes" : "no", Rsrv_interactive ? "yes" : "no", maxInBuf/1024);
 				return 0;	       
 			}
 			if (!strcmp(argv[i]+2,"version")) {
@@ -2852,6 +2875,10 @@ int main(int argc, char **argv)
 		printf("Failed to initialize embedded R! (stat=%d)\n",stat);
 		return -1;
     }
+#ifndef WIN32
+	/* windows uses this in init, unix doesn't so we set it here */
+	R_Interactive = Rsrv_interactive;
+#endif
 
     if (src_list) { /* do any sourcing if necessary */
 		struct source_entry *se=src_list;
