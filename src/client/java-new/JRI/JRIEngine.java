@@ -64,7 +64,7 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 	
 	/** canonical NULL object */
 	public REXPNull nullValue;
-	
+
 	/** class used for wrapping raw pointers such that they are adequately protected and released according to the lifespan of the Java object */
 	class JRIPointer {
 		long ptr;
@@ -367,17 +367,36 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			String an[] = rni.rniGetAttrNames(ptr);
 			REXPList attrs = null;
 			if (an != null && an.length > 0) { // are there attributes? Then we need to resolve them first
+				// we allow special handling for Java references so we need the class and jobj
+				long jobj = 0;
+				String oclass = null;
 				RList attl = new RList();
 				for (int i = 0; i < an.length; i++) {
 					long aptr = rni.rniGetAttr(ptr, an[i]);
 					if (aptr != 0 && aptr != R_NilValue) {
+						if (an[i].equals("jobj")) jobj = aptr;
 						REXP av = resolvePointer(aptr);
-						if (av != null && av != nullValue)
+						if (av != null && av != nullValue) {
 							attl.put(an[i], av);
+							if (an[i].equals("class") && av.isString())
+								oclass = av.asString();
+						}
 					}
 				}
 				if (attl.size() > 0)
 					attrs = new REXPList(attl);
+				// FIXME: in general, we could allow arbitrary convertors here ...
+				// Note that the jobj hack is only needed because we don't support EXTPTRSXP conversion
+				// (for a good reason - we can't separate the PTR from the R object so the only way it can
+				// live is as a reference and we don't want resolvePointer to ever return REXPReference as
+				// that could trigger infinite recursions), but if we did, we could allow post-processing
+				// based on the class attribute on the converted REXP.. (better, we can leverage REXPUnknown
+				// and pass the ptr to the convertor so it can pull things like EXTPTR via rni)
+				if (jobj != 0 && oclass != null &&
+				    (oclass.equals("jobjRef") ||
+				     oclass.equals("jarrayRef") ||
+				     oclass.equals("jrectRef")))
+					return new REXPJavaReference(rni.rniXrefToJava(jobj), attrs);
 			}
 			switch (xt) {
 				case NILSXP:
@@ -393,7 +412,7 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 						long levx = rni.rniGetAttr(ptr, "levels");
 						if (levx != 0) {
 							String[] levels = null;
-							// we're using low-lever calls here (FIXME?)
+							// we're using low-level calls here (FIXME?)
 							int rlt = rni.rniExpType(levx);
 							if (rlt == STRSXP) {
 								levels = rni.rniGetStringArray(levx);
@@ -471,6 +490,10 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 					
 				case S4SXP:
 					res = new REXPS4(attrs);
+					break;
+					
+				default:
+					res = new REXPUnknown(xt, attrs);
 					break;
 			}
 		} finally {
@@ -583,6 +606,30 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 				}
 			} else if (value.isSymbol())
 				return rni.rniInstallSymbol(value.asString()); // symbols need no attribute handling, hence get out right away
+			else if (value instanceof REXPJavaReference) { // we wrap Java references by calling new("jobjRef", ...)
+				Object jval = ((REXPJavaReference)value).getObject();
+				long jobj = rni.rniJavaToXref(jval);
+				rni.rniProtect(jobj);
+				long jobj_sym = rni.rniInstallSymbol("jobj");
+				long jclass_sym = rni.rniInstallSymbol("jclass");
+				String clname = "java/lang/Object";
+				if (jval != null) {
+					clname = jval.getClass().getName();
+					clname = clname.replace('.', '/');
+				}
+				long jclass = rni.rniPutString(clname);
+				rni.rniProtect(jclass);
+				long jobjRef = rni.rniPutString("jobjRef");
+				rni.rniProtect(jobjRef);
+				long ro = rni.rniEval(rni.rniLCons(rni.rniInstallSymbol("new"),
+								   rni.rniCons(jobjRef,
+									       rni.rniCons(jobj, 
+											   rni.rniCons(jclass, R_NilValue, jclass_sym, false),
+											   jobj_sym, false))
+								   ), 0);
+				rni.rniUnprotect(3);
+				ptr = ro;
+			}
 			if (ptr == R_NilValue)
 				return ptr;
 			if (ptr != 0) {
