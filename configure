@@ -1753,18 +1753,20 @@ if test "${with_server}" = yes; then
    { echo "$as_me:$LINENO: result: yes" >&5
 echo "${ECHO_T}yes" >&6; }
    if test "${has_R_shlib}" = no; then
-      { { echo "$as_me:$LINENO: error: R was configured without --enable-R-shlib
+      { { echo "$as_me:$LINENO: error: R was configured without --enable-R-shlib or --enable-R-static-lib
 
-*** Rserve requires R shared library.                                  ***
-*** Please install libR.so or compile R with --enable-R-shlib support  ***
+*** Rserve requires R (shared or static) library.                       ***
+*** Please install R library or compile R with either --enable-R-shlib  ***
+*** or --enable-R-static-lib support                                    ***
 
  Alternatively use --without-server if you wish to build only Rserve client.
 
 " >&5
-echo "$as_me: error: R was configured without --enable-R-shlib
+echo "$as_me: error: R was configured without --enable-R-shlib or --enable-R-static-lib
 
-*** Rserve requires R shared library.                                  ***
-*** Please install libR.so or compile R with --enable-R-shlib support  ***
+*** Rserve requires R (shared or static) library.                       ***
+*** Please install R library or compile R with either --enable-R-shlib  ***
+*** or --enable-R-static-lib support                                    ***
 
  Alternatively use --without-server if you wish to build only Rserve client.
 

@@ -11,7 +11,7 @@ import java.util.*;
 
     This class inofficially implements the Map interface. Unfortunately a conflict in the Java iterface classes Map and List doesn't allow us to implement both officially. Most prominently the Map 'remove' method had to be renamed to removeByKey.
 
-    @version $Id: RList.java 2906 2008-07-02 21:08:16Z urbanek $
+    @version $Id: RList.java 3199 2009-09-21 15:53:10Z urbanek $
 */
 public class RList extends Vector implements List {
     public Vector names;
@@ -118,7 +118,7 @@ public class RList extends Vector implements List {
 		if (names==null)
 			names = new Vector();
 		if (names.size() < size()) names.setSize(size());
-		if (i < size()) names.add(i, value);
+		if (i < size()) names.set(i, value);
 	}
 
     /** returns all keys of the list
@@ -158,7 +158,7 @@ public class RList extends Vector implements List {
 	boolean ch = super.addAll(index, c);
 	if (names==null) return ch;
 	int l = c.size();
-	while (l>0) names.add(index, null);
+	while (l-- > 0) names.add(index, null);
 	return ch;
     }
 
@@ -266,6 +266,7 @@ public class RList extends Vector implements List {
 
     public void putAll(Map t) {
 	if (t==null) return;
+	// NOTE: this if branch is dead since RList cannot inherit from Map
 	if (t instanceof RList) { // we need some more sophistication for RLists as they may have null-names which we append
 	    RList l = (RList) t;
 	    if (names==null) {
@@ -292,6 +293,25 @@ public class RList extends Vector implements List {
 	}
     }
 
+    public void putAll(RList t) {
+	if (t == null) return;
+	RList l = (RList) t;
+	if (names==null) {
+	    addAll(l);
+	    return;
+	}
+	int n = l.size();
+	int i = 0;
+	while (i < n) {
+	    String key = l.keyAt(i);
+	    if (key == null)
+		add(l.at(i));
+	    else
+		put(key, l.at(i));
+	    i++;
+	}
+    }
+    
     public Object removeByKey(Object key) {
 	if (names==null) return null;
 	int i = names.indexOf(key);

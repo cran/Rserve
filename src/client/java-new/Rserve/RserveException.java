@@ -6,16 +6,16 @@
 //
 //  Created by Simon Urbanek on Mon Aug 18 2003.
 //
-//  $Id: RserveException.java 2743 2007-05-04 16:42:17Z urbanek $
+//  $Id: RserveException.java 3156 2009-08-12 15:35:30Z urbanek $
 //
 
 package org.rosuda.REngine.Rserve;
 
 import org.rosuda.REngine.Rserve.protocol.RPacket;
 import org.rosuda.REngine.Rserve.protocol.RTalk;
+import org.rosuda.REngine.REngineException;
 
-public class RserveException extends Exception {
-    protected RConnection conn;
+public class RserveException extends REngineException {
     protected String err;
     protected int reqReturnCode;
 
@@ -42,6 +42,7 @@ public class RserveException extends Exception {
             case RTalk.ERR_out_of_mem: return "FATAL: Rserve ran out of memory, closing connection";
 			case RTalk.ERR_session_busy: return "session is busy";
 			case RTalk.ERR_detach_failed: return "session detach failed";
+		case RTalk.ERR_ctrl_closed: return "control pipe to master process is closed/broken";
         }
         return "error code: "+code;
     }
@@ -55,8 +56,8 @@ public class RserveException extends Exception {
     }
 
     public RserveException(RConnection c, String msg, int requestReturnCode) {
-        super(msg);
-        conn=c; reqReturnCode=requestReturnCode;
+        super(c, msg);
+        reqReturnCode=requestReturnCode;
 		if (c!=null) c.lastError=getMessage();
     }
 

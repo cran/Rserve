@@ -1,4 +1,3 @@
-import org.rosuda.REngine.*;
 import org.rosuda.REngine.Rserve.*;
 
 class TestException extends Exception {
@@ -10,7 +9,7 @@ public class test {
 	try {
 	    RConnection c = new RConnection();
 
-	    System.out.println(">>"+c.eval("R.version$version.string").asString()+"<<");
+	    System.out.println(">>" + c.eval("R.version$version.string").asString() + "<<");
 
 		{
 			System.out.println("* Test string and list retrieval");
@@ -24,8 +23,7 @@ public class test {
 		
 	    {
 		System.out.println("* Test NA/NaN support in double vectors...");
-		double R_NA = Double.longBitsToDouble(0x7ff00000000007a2L);
-		// int R_NA_int = -2147483648; // just for completeness
+		double R_NA = REXPDouble.NA;
 		double x[] = { 1.0, 0.5, R_NA, Double.NaN, 3.5 };
 		c.assign("x",x);
 		String nas = c.eval("paste(capture.output(print(x)),collapse='\\n')").asString();
@@ -55,6 +53,31 @@ public class test {
 			System.out.println("  z = "+x);
 			System.out.println("PASSED");
 	    }
+		{
+			System.out.println("* Test support for logicals ... ");
+			System.out.println("  assign b={true,false,true}");
+			c.assign("b", new REXPLogical(new boolean[] { true, false, true }));
+			REXP x = c.parseAndEval("b");
+			System.out.println("  " + ((x != null) ? x.toDebugString() : "NULL"));
+			if (!x.isLogical() || x.length() != 3)
+				throw new TestException("boolean array assign+retrieve test failed");
+			boolean q[] = ((REXPLogical)x).isTRUE();
+			if (q[0] != true || q[1] != false || q[2] != true)
+				throw new TestException("boolean array assign+retrieve test failed (value mismatch)");
+			System.out.println("  get c(TRUE,FLASE,NA)");
+			x = c.parseAndEval("c(TRUE,FALSE,NA)");
+			System.out.println("  " + ((x != null) ? x.toDebugString() : "NULL"));
+			if (!x.isLogical() || x.length() != 3)
+				throw new TestException("boolean array NA test failed");
+			boolean q1[] = ((REXPLogical)x).isTRUE();
+			boolean q2[] = ((REXPLogical)x).isFALSE();
+			boolean q3[] = ((REXPLogical)x).isNA();
+			if (q1[0] != true || q1[1] != false || q1[2] != false ||
+				q2[0] != false || q2[1] != true || q2[2] != false ||
+				q3[0] != false || q3[1] != false || q3[2] != true)
+				throw new TestException("boolean array NA test failed (value mismatch)");
+		}
+
 		{ // regression: object bit was not set for Java-side generated objects before 0.5-3
 			System.out.println("* Testing functionality of assembled S3 objects ...");
 			// we have already assigned the data.frame in previous test, so we jsut re-use it
@@ -159,6 +182,23 @@ public class test {
 			System.out.println("PASSED");
 		}
 		
+		{ // test control commands (works only when enabled and in Rserve 0.6-0 and higher only) - must be the last test since it closes the connection and shuts down the server
+			System.out.println("* Test control commands (this will fail if control commands are disabled) ...");
+			System.out.println("  server eval");
+			String key = "rn" + Math.random(); // generate a random number to prevent contamination from previous tests
+			c.serverEval("xXx<-'" + key + "'");
+			c.close();
+			c = new RConnection();
+			REXP x = c.eval("xXx");
+			if (x == null || !x.isString() || x.length() != 1 || !x.asString().equals(key))
+				throw new TestException("control eval test failed - assignment was not persistent");
+			c.serverEval("rm(xXx)"); // remove the test variable to not pollute the global workspace
+			System.out.println("  server shutdown");
+			c.serverShutdown();
+			c.close();
+			System.out.println("PASSED");
+		}
+	    
 		} catch (RserveException rse) {
 	    System.out.println(rse);
 	} catch (REXPMismatchException mme) {

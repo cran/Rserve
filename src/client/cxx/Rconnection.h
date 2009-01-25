@@ -19,7 +19,7 @@
  *  everyone modifying this software to contribute back any improvements and
  *  bugfixes to the project for the benefit all other users. Thank you.
  *
- *  $Id: Rconnection.h 257 2009-01-25 17:59:17Z urbanek $
+ *  $Id: Rconnection.h 265 2009-01-28 20:58:14Z urbanek $
  */
 
 /* external defines:
@@ -398,6 +398,13 @@ public:
     int writeFile(const char *buf, unsigned int len);
     int closeFile();
     int removeFile(const char *fn);
+	
+#ifdef CMD_ctrl
+    /* server control functions (need Rserve 0.6-0 or higher) */
+    int serverEval(const char *cmd);
+    int serverSource(const char *fn);
+    int serverShutdown();
+#endif
 };
 
 #endif
