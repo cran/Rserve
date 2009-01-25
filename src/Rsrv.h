@@ -18,7 +18,7 @@
  *  Note: This header file is licensed under LGPL to allow other
  *        programs to use it under LGPL. Rserve itself is licensed under GPL.
  *
- *  $Id: Rsrv.h 331 2012-01-17 18:21:41Z urbanek $
+ *  $Id: Rsrv.h 335 2012-01-28 04:18:15Z urbanek $
  */
 
 /* external defines:
@@ -32,7 +32,7 @@
 #include "config.h"
 #endif
 
-#define RSRV_VER 0x000607 /* Rserve v0.6-7 */
+#define RSRV_VER 0x000608 /* Rserve v0.6-8 */
 
 #define default_Rsrv_port 6311
 

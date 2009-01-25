@@ -1,5 +1,5 @@
 Package: Rserve
-Version: 0.6-7
+Version: 0.6-8
 Title: Binary R server
 Author: Simon Urbanek <Simon.Urbanek@r-project.org>
 Maintainer: Simon Urbanek <Simon.Urbanek@r-project.org>
@@ -17,4 +17,4 @@ Description: Rserve acts as a socket server (TCP/IP or local sockets)
 License: GPL-2
 URL: http://www.rforge.net/Rserve/
 Repository: CRAN
-Date/Publication: 2012-01-17 20:52:15
+Date/Publication: 2012-02-20 20:06:18
