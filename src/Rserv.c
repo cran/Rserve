@@ -1,12 +1,10 @@
 /*
  *  Rserv : R-server that allows to use embedded R via TCP/IP
- *          currently based on R-1.5.1 API (tested up to R 1.8.1)
- *  Copyright (C) 2002,3 Simon Urbanek
+ *  Copyright (C) 2002-9 Simon Urbanek
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
+ *  the Free Software Foundation; version 2 of the License
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -17,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 243 2008-10-15 13:55:42Z urbanek $
+ *  $Id: Rserv.c 262 2009-01-25 18:18:50Z urbanek $
  */
 
 /* external defines:
@@ -93,6 +91,8 @@ the use of DT_LARGE/XT_LARGE.
    unix only (works only if Rserve was started by root):
    uid <uid>
    gid <gid>
+
+   encoding native|latin1|utf8 [native]
 
    source <file>
    eval <expression(s)>
@@ -175,6 +175,7 @@ typedef int socklen_t;
 #endif
 #ifdef FORKED
 #include <sys/wait.h>
+#include <signal.h>
 #endif
 #ifdef ERROR
 #undef ERROR
@@ -255,7 +256,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 243 2008-10-15 13:55:42Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 262 2009-01-25 18:18:50Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -264,6 +265,39 @@ int localUCIX;
 #else
 #define localUCIX UCIX
 #endif
+
+/* string encoding handling */
+#if (R_VERSION < R_Version(2,8,0)) || (defined DISABLE_ENCODING)
+#define mkRChar(X) mkChar(X)
+#define CHAR_FE(X) CHAR(X)
+#else
+#define USE_ENCODING 1
+static cetype_t string_encoding = CE_NATIVE;  /* default is native */
+#define mkRChar(X) mkCharCE((X), string_encoding)
+#define CHAR_FE(X) charsxp_to_current(X)
+static const char *charsxp_to_current(SEXP s) {
+	if (Rf_getCharCE(s) == string_encoding) return CHAR(s);
+	return Rf_reEnc(CHAR(s), getCharCE(s), string_encoding, 0);
+}
+#endif
+
+static int set_string_encoding(const char *enc, int verbose) {
+#ifdef USE_ENCODING
+	if (!strcmp(enc, "native")) string_encoding = CE_NATIVE;
+	else if (!strcmp(enc, "latin1")) string_encoding = CE_LATIN1;
+	else if (!strcmp(enc, "utf8")) string_encoding = CE_UTF8;
+	else {
+		if (verbose)
+			fprintf(stderr, "WARNING: invalid encoding value '%s' - muse be one of 'native', 'latin1' or 'utf8'.\n", enc);
+		return 0;
+	}
+	return 1;
+#else
+	if (verbose)
+		fprintf(stderr, "WARNING: 'encoding' defined but this Rserve has no encoding support.\n");
+	return 0;
+#endif
+}
 
 /* "smart" atoi - accepts 0x for hex and 0 for octal */
 static int satoi(const char *str) {
@@ -366,13 +400,13 @@ rlen_t getStorageSize(SEXP x) {
     case SYMSXP:
     case CHARSXP:
 		{
-			char *ct=(char*) ((t==CHARSXP)?STRING_PTR(x):STRING_PTR(PRINTNAME(x)));
+			const char *ct = ((t==CHARSXP) ? CHAR_FE(x) : CHAR_FE(PRINTNAME(x)));
 			if (!ct)
-				len+=4;
+				len += 4;
 			else {
-				unsigned int sl=strlen(ct)+1;
-				sl=(sl+3)&0xfffffffc;
-				len+=sl;
+				unsigned int sl = strlen(ct) + 1;
+				sl = (sl+3) & 0xfffffffc;
+				len += sl;
 			}
 		}
 		break;
@@ -526,7 +560,7 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		st = (char *)buf;
 		i=0;
 		while (i < LENGTH(x)) {
-			const char *cv = CHAR(STRING_ELT(x, i));
+			const char *cv = CHAR_FE(STRING_ELT(x, i));
 			int l = strlen(cv);
 			strcpy(st, cv);
 			st += l+1;
@@ -575,10 +609,10 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		const char *val;
 		if (t==CHARSXP) {
 			*buf=itop(XT_STR|hasAttr);
-			val = CHAR(x);
+			val = CHAR_FE(x);
 		} else {
 			*buf=itop(XT_SYMNAME|hasAttr);
-			val = CHAR(PRINTNAME(x));
+			val = CHAR_FE(PRINTNAME(x));
 		}
 		buf++;
 		attrFixup;
@@ -722,7 +756,7 @@ void printSEXP(SEXP e) /* merely for debugging purposes
 		return;
     }
     if (t==CHARSXP) {
-		printf("scalar string: \"%s\"\n",(char*) STRING_PTR(e));
+		printf("scalar string: \"%s\"\n", CHAR(e));
 		return;
     }
     if (t==SYMSXP) {
@@ -782,7 +816,7 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
     case XT_INT:
     case XT_ARRAY_INT:
 		l=ln/4;
-		PROTECT(val=NEW_INTEGER(l));
+		PROTECT(val = allocVector(INTSXP, l));
 		(*UPC)++;
 		i=0;
 		while (i<l) {
@@ -793,7 +827,7 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
     case XT_DOUBLE:
     case XT_ARRAY_DOUBLE:
 		l=ln/8;
-		PROTECT(val=NEW_NUMERIC(l)); (*UPC)++;
+		PROTECT(val = allocVector(REALSXP, l)); (*UPC)++;
 		i=0;
 		while (i<l) {
 			fixdcpy(REAL(val)+i,b);
@@ -820,11 +854,11 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 			c++;
 			i++; 
 		}
-		PROTECT(val=NEW_STRING(j)); (*UPC)++;
+		PROTECT(val = allocVector(STRSXP, j)); (*UPC)++;
 		i=j=0; c=(char*)b; cc=c;
 		while(i<ln) {
 			if (!*c) {
-				VECTOR_ELT(val,j)=mkChar(cc);
+				SET_STRING_ELT(val, j, mkRChar(cc));
 				j++; cc=c+1;
 			}
 			c++; i++;
@@ -834,12 +868,12 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 	case XT_RAW:
 		i=ptoi(*b);
 		b++;
-		PROTECT(val=allocVector(RAWSXP, i)); (*UPC)++;
+		PROTECT(val = allocVector(RAWSXP, i)); (*UPC)++;
 		memcpy(RAW(val), b, i);
 		*buf=(unsigned int*)((char*)b + ln);
 		break;
 	case XT_VECTOR:
-	case XT_VECTOR_STR:
+	case XT_VECTOR_STR: /* FIXME: really this will fail in R 2.9.0-devel because SET_ELEMENT only supports lists now. Given that XT_VECTOR_STR should not be used we may consider removing it ... */
 	case XT_VECTOR_EXP:
 		{
 			unsigned char *ie = (unsigned char*) b + ln;
@@ -863,7 +897,7 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 			PROTECT(val);
 			while (n>0) {
 				n--;
-				SET_ELEMENT(val, n, CAR(lh));
+				SET_VECTOR_ELT(val, n, CAR(lh));
 				lh=CDR(lh);
 			}
 #ifdef RSERV_DEBUG
@@ -885,7 +919,7 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		{
 			char *c = (char*) b;
 			if (ty==XT_STR)
-				val=mkChar(c);
+				val=mkRChar(c);
 			else
 				val=install(c);
 			PROTECT(val);
@@ -937,7 +971,27 @@ SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		error("unsupported type %d\n", ty);
 		*buf=(unsigned int*)((char*)b + ln);
     }
-	if (vatt) SET_ATTRIB(val, vatt);
+	if (vatt) {
+		/* if vatt contains "class" we have to set the object bit [we could use classgets(vec,kls) instead] */
+		SEXP head = vatt;
+		int has_class = 0;
+		SET_ATTRIB(val, vatt);
+		while (head != R_NilValue) {
+			if (TAG(head) == R_ClassSymbol) {
+				has_class = 1; break;
+			}
+			head = CDR(head);
+		}
+		if (has_class) /* if it has a class slot, we have to set the object bit */
+			SET_OBJECT(val, 1);
+#ifdef SET_S4_OBJECT
+		/* FIXME: we have currently no way of knowing whether an object
+		   derived from a non-S4 type is actually S4 object. Hence
+		   we can only flag "pure" S4 objects */
+		if (TYPEOF(val) == S4SXP)
+			SET_S4_OBJECT(val);
+#endif
+	}
     return val;
 }
 
@@ -1092,46 +1146,32 @@ int loadConfig(char *fn)
 			if (!strcmp(c,"umask") && *p)
 				umask_value=satoi(p);
 #endif
-			if (!strcmp(c,"allow")) {
-				if (*p) {
-					char **l;
-					if (!allowed_ips) {
-						allowed_ips=(char**) malloc(sizeof(char*)*128);
-						*allowed_ips=0;
-					}
-					l=allowed_ips;
-					while (*l) l++;
-					if (l-allowed_ips>=127)
-						fprintf(stderr, "Maximum of allowed IPs (127) exceeded, ignoring 'allow %s'\n", p);
-					else {
-						*l=strdup(p);
-						l++;
-						*l=0;
-					}
+			if (!strcmp(c,"allow") && *p) {
+				char **l;
+				if (!allowed_ips) {
+					allowed_ips = (char**) malloc(sizeof(char*)*128);
+					*allowed_ips = 0;
 				}
+				l = allowed_ips;
+				while (*l) l++;
+				if (l - allowed_ips >= 127)
+					fprintf(stderr, "WARNING: Maximum of allowed IPs (127) exceeded, ignoring 'allow %s'\n", p);
+					else {
+						*l = strdup(p);
+						l++;
+						*l = 0;
+					}
 			}
-			if (!strcmp(c,"workdir")) {
-				if (*p) {
-					workdir=(char*)malloc(strlen(p)+1);
-					strcpy(workdir,p);
-				} else workdir=0;
-			}
-			if (!strcmp(c,"socket")) {
-				if (*p) {
-					localSocketName=(char*)malloc(strlen(p)+1);
-					strcpy(localSocketName,p);
-				} else localSocketName=0;
-			}
-			if (!strcmp(c,"sockmod")) {
-				if (*p)
-					localSocketMode=satoi(p);
-			}
-			if (!strcmp(c,"pwdfile")) {
-				if (*p) {
-					pwdfile=(char*)malloc(strlen(p)+1);
-					strcpy(pwdfile,p);
-				} else pwdfile=0;
-			}
+			if (!strcmp(c,"workdir"))
+				workdir = (*p) ? strdup(p) : 0;
+			if (!strcmp(c,"encoding") && *p)
+				set_string_encoding(p, 1);
+			if (!strcmp(c,"socket"))
+				localSocketName = (*p) ? strdup(p) : 0;
+			if (!strcmp(c,"sockmod") && *p)
+					localSocketMode = satoi(p);
+			if (!strcmp(c,"pwdfile"))
+				pwdfile = (*p) ? strdup(p) : 0;
 			if (!strcmp(c,"auth"))
 				authReq=(*p=='1' || *p=='y' || *p=='r' || *p=='e')?1:0;
 			if (!strcmp(c,"plaintext"))
@@ -1202,7 +1242,7 @@ SEXP parseString(char *s, int *parts, ParseStatus *status) {
     }
     
     PROTECT(cv=allocVector(STRSXP, 1));
-    SET_VECTOR_ELT(cv, 0, mkChar(s));  
+    SET_STRING_ELT(cv, 0, mkRChar(s));  
     
     while (maxParts>0) {
 		pr=RS_ParseVector(cv, maxParts, status);
@@ -1220,8 +1260,8 @@ SEXP parseExps(char *s, int exps, ParseStatus *status) {
     SEXP cv, pr;
     
     PROTECT(cv=allocVector(STRSXP, 1));
-    SET_VECTOR_ELT(cv, 0, mkChar(s));  
-    pr=RS_ParseVector(cv, 1, status);
+    SET_STRING_ELT(cv, 0, mkRChar(s));  
+    pr = RS_ParseVector(cv, 1, status);
     UNPROTECT(1);
     return pr;
 }
@@ -1524,7 +1564,7 @@ decl_sbthread newConn(void *thp) {
 			char *pbuf = (char*) RAW(pp);
 			size_t i = 0;
 #ifdef RSERV_DEBUG
-			printf("loading (raw) buffer (awaiting %d bytes)\n",plen);
+			printf("loading (raw) buffer (awaiting %d bytes)\n", (int)plen);
 #endif
 			while((n = recv(s,(char*)(pbuf+i),plen-i,0))) {
 				if (n > 0) i+=n;
@@ -1539,13 +1579,13 @@ decl_sbthread newConn(void *thp) {
 			if (!maxInBuf || plen<maxInBuf) {
 				if (plen>=inBuf) {
 #ifdef RSERV_DEBUG
-					printf("resizing input buffer (was %d, need %d) to %d\n",inBuf,plen,((plen|0x1fff)+1));
+					printf("resizing input buffer (was %d, need %d) to %d\n", (int)inBuf, (int) plen, (int)(((plen|0x1fff)+1)));
 #endif
 					free(buf); /* the buffer is just a scratchpad, so we don't need to use realloc */
 					buf=(char*)malloc(inBuf=((plen|0x1fff)+1)); /* use 8kB granularity */
 					if (!buf) {
 #ifdef RSERV_DEBUG
-						fprintf(stderr,"FATAL: out of memory while resizing buffer to %d,\n",inBuf);
+						fprintf(stderr,"FATAL: out of memory while resizing buffer to %d,\n", (int)inBuf);
 #endif
 						sendResp(s,SET_STAT(RESP_ERR,ERR_out_of_mem));
 						free(sendbuf); free(sfbuf);
@@ -1554,7 +1594,7 @@ decl_sbthread newConn(void *thp) {
 					}	    
 				}
 #ifdef RSERV_DEBUG
-				printf("loading buffer (awaiting %d bytes)\n",plen);
+				printf("loading buffer (awaiting %d bytes)\n",(int) plen);
 #endif
 				i=0;
 				while((n=recv(s,(char*)(buf+i),plen-i,0))) {
@@ -1603,7 +1643,7 @@ decl_sbthread newConn(void *thp) {
 					if (pars>15) break;
 				} /* we don't parse more than 16 parameters */
 			} else {
-				printf("discarding buffer because too big (awaiting %d bytes)\n",plen);
+				printf("discarding buffer because too big (awaiting %d bytes)\n", (int)plen);
 				size_t i=plen;
 				while((n=recv(s,(char*)buf,i>inBuf?inBuf:i,0))) {
 					if (n>0) i-=n;
@@ -1724,6 +1764,26 @@ decl_sbthread newConn(void *thp) {
 			exit(0);
 #endif
 			return;
+		}
+
+		if (ph.cmd == CMD_setEncoding) { /* set string encoding */
+			process = 1;
+			if (pars<1 || parT[0] != DT_STRING) 
+				sendResp(s, SET_STAT(RESP_ERR, ERR_inv_par));
+			else {
+				char *c = (char*) parP[0];
+#ifdef RSERV_DEBUG
+				printf(">>CMD_setEncoding '%s'.\n", c ? c : "<null>");
+#endif
+#ifdef USE_ENCODING
+				if (c && set_string_encoding(c, 0))
+					sendResp(s, RESP_OK);
+				else
+					sendResp(s, SET_STAT(RESP_ERR, ERR_inv_par));
+#else
+				sendResp(s, SET_STAT(RESP_ERR, ERR_unsupportedCmd));
+#endif
+			}
 		}
 
 		if (ph.cmd==CMD_setBufferSize) {
@@ -1909,7 +1969,7 @@ decl_sbthread newConn(void *thp) {
 					printf("  assigning string \"%s\"\n",((char*)(parP[1])));
 #endif
 					PROTECT(val = allocVector(STRSXP,1));
-					SET_STRING_ELT(val,0,mkChar((char*)(parP[1])));
+					SET_STRING_ELT(val,0,mkRChar((char*)(parP[1])));
 					defineVar((sym)?sym:install(c),val,R_GlobalEnv);
 					UNPROTECT(1);
 					sendResp(s,RESP_OK);
@@ -2359,6 +2419,13 @@ int main(int argc, char **argv)
 				else
 					localSocketName=argv[++i];
 			}
+			if (!strcmp(argv[i]+2, "RS-encoding")) {
+				isRSP = 1;
+				if (i + 1 == argc)
+					fprintf(stderr,"Missing socket specification for --RS-encoding.\n");
+				else
+					set_string_encoding(argv[++i], 1);
+			}
 			if (!strcmp(argv[i]+2,"RS-workdir")) {
 				isRSP=1;
 				if (i+1==argc)
@@ -2385,7 +2452,7 @@ int main(int argc, char **argv)
 				printf("Rserve v%d.%d-%d (%s)\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255,rserve_rev);
 			}
 			if (!strcmp(argv[i]+2,"help")) {
-				printf("Usage: R CMD Rserve [<options>]\n\nOptions: --help  this help screen\n --version  prints Rserve version (also passed to R)\n --RS-port <port> listen on the specified TCP port\n --RS-socket <socket> use specified local (unix) socket instead of TCP/IP.\n --RS-workdir <path> use specified working directory root for connections.\n --RS-conf <file> load additional config file.\n --RS-settings  dumps current settings of the Rserve\n\nAll other options are passed to the R engine.\n\n");
+				printf("Usage: R CMD Rserve [<options>]\n\nOptions: --help  this help screen\n --version  prints Rserve version (also passed to R)\n --RS-port <port> listen on the specified TCP port\n --RS-socket <socket> use specified local (unix) socket instead of TCP/IP.\n --RS-workdir <path> use specified working directory root for connections.\n --RS-encoding <enc> set default server string encoding to <enc>.\n --RS-conf <file> load additional config file.\n --RS-settings  dumps current settings of the Rserve\n\nAll other options are passed to the R engine.\n\n");
 #ifdef RSERV_DEBUG
 				printf("debugging flag:\n --RS-dumplimit <number>  sets limit of items/bytes to dump in debugging output. set to 0 for unlimited\n\n");
 #endif

@@ -1,2 +1,3 @@
+RSconnect               Functions to talk to an Rserve
 Rserve                  Server providing R functionality to
-                        applications via TCP/IP
+                        applications via TCP/IP or local unix sockets
