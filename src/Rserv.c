@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 325 2011-10-19 14:57:46Z urbanek $
+ *  $Id: Rserv.c 332 2012-01-17 18:30:35Z urbanek $
  */
 
 /* external defines:
@@ -308,7 +308,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 325 2011-10-19 14:57:46Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 332 2012-01-17 18:30:35Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -2009,7 +2009,7 @@ decl_sbthread newConn(void *thp) {
 						sfbuf[sfbufSize - 1] = 0;
 						while(!pwd_eof(pwf))
 							if (pwd_gets(sfbuf, sfbufSize - 1, pwf)) {
-								c1 = sfbuf;
+								char *login = c1 = sfbuf;
 								while(*c1 && *c1 != ' ' && *c1 != '\t') c1++;
 								if (*c1) {
 									*c1 = 0;
@@ -2019,18 +2019,18 @@ decl_sbthread newConn(void *thp) {
 								c2 = c1;
 								while(*c2) if (*c2 == '\r' || *c2=='\n') *c2 = 0; else c2++;
 								ctrl_flag = 0;
-								if (*c == '@') { /* only users with @ prefix can use control commands */
-									c++;
+								if (*login == '@') { /* only users with @ prefix can use control commands */
+									login++;
 									ctrl_flag = 1;
 								}
-								if (*c == '*') { /* general authentication - useful to set control access but leave client access open */
+								if (*login == '*') { /* general authentication - useful to set control access but leave client access open */
 									authed = 1;
 #ifdef RSERV_DEBUG
 									printf("Public authentication enabled (found * entry), allowing login without checking.\n");
 #endif
 									break;
 								}
-								if (!strcmp(sfbuf,c)) { /* login found */
+								if (!strcmp(login, c)) { /* login found */
 #ifdef RSERV_DEBUG
 									printf("Found login '%s', checking password.\n", c);
 #endif

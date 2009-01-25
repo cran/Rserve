@@ -28,7 +28,13 @@ public class REXPList extends REXPVector {
 		super();
 		payload = new RList(new REXP[] { value }, new String[] { name });
 	}
-	
+
+	public Object asNativeJavaObject() throws REXPMismatchException {
+		// since REXPGenericVector does the hard work, we just cheat and use it in turn
+		REXPGenericVector v = new REXPGenericVector(payload);
+		return v.asNativeJavaObject();
+	}
+
 	public int length() { return payload.size(); }
 
 	public boolean isList() { return true; }
