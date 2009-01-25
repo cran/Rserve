@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 277 2009-08-20 19:41:40Z urbanek $
+ *  $Id: Rserv.c 289 2010-05-24 14:53:25Z urbanek $
  */
 
 /* external defines:
@@ -88,9 +88,12 @@ the use of DT_LARGE/XT_LARGE.
    maxinbuf <size in kB> [262144 = 256MB]
    maxsendbuf <size in kB> [0 = no limit]
    
+   cachepwd no|yes|indefinitely
+ 
    unix only (works only if Rserve was started by root):
    uid <uid>
    gid <gid>
+   su now|server|client
 
    encoding native|latin1|utf8 [native]
 
@@ -99,20 +102,30 @@ the use of DT_LARGE/XT_LARGE.
 
    A note about security: Anyone with access to R has access to the shell
    via "system" command, so you should consider following rules:
+
    - NEVER EVER run Rserv as root (unless uid/gid is used) - this compromises
      the box totally
+
    - use "remote disable" whenever you don't need remote access.
+
    - if you need remote access use "auth required" and "plaintext disable"
      consider also that anyone with the access can decipher other's passwords
-	 if he knows how to. the authentication prevents hackers from the net
-	 to break into Rserv, but it doesn't (and cannot) protect from
-	 inside attacks (since R has no security measures).
-	 You should also use a special, restricted user for running Rserv
-	 as a public server, so noone can try to hack the box it runs on.
+     if he knows how to. the authentication prevents hackers from the net
+     to break into Rserv, but it doesn't (and cannot) protect from
+     inside attacks (since R has no security measures).
+ 
+     You should also use a special, restricted user for running Rserv 
+     as a public server, so noone can try to hack the box it runs on.
+ 
+     From 0.6-1 on you can set gid/uid and use "su client", "cachepwd yes"
+     and only a root-readable password file such that clients cannot
+     read it and also cannot affect the server process (this works on
+     unix only).
+ 
    - don't enable plaintext unless you really have to. Passing passwords
      in plain text over the net is not wise and not necessary since both
-	 Rserv and JRclient provide encrypted passwords with server-side
-	 challenge (thus safe from sniffing).
+     Rserv and JRclient provide encrypted passwords with server-side
+     challenge (thus safe from sniffing).
 */
 
 #define USE_RINTERNALS
@@ -240,24 +253,24 @@ extern __declspec(dllimport) int R_SignalHandlers;
 
 int dumpLimit=128;
 
-int port = default_Rsrv_port;
-int active = 1; /* 1=server loop is active, 0=shutdown */
-int UCIX   = 1; /* unique connection index */
+static int port = default_Rsrv_port;
+static int active = 1; /* 1=server loop is active, 0=shutdown */
+static int UCIX   = 1; /* unique connection index */
 
-char *localSocketName = 0; /* if set listen on this local (unix) socket instead of TCP/IP */
-int localSocketMode = 0;   /* if set, chmod is used on the socket when created */
+static char *localSocketName = 0; /* if set listen on this local (unix) socket instead of TCP/IP */
+static int localSocketMode = 0;   /* if set, chmod is used on the socket when created */
 
-int allowIO=1;  /* 1=allow I/O commands, 0=don't */
+static int allowIO=1;  /* 1=allow I/O commands, 0=don't */
 
-char **top_argv;
-int top_argc;
+static char **top_argv;
+static int top_argc;
 
-char *workdir="/tmp/Rserv";
-char *pwdfile=0;
+static char *workdir="/tmp/Rserv";
+static char *pwdfile=0;
 
-SOCKET csock=-1;
+static SOCKET csock=-1;
 
-int parentPID=-1;
+static int parentPID=-1;
 
 int is_child = 0;       /* 0 for parent (master), 1 for children */
 int parent_pipe = -1;   /* pipe to the master process or -1 if not available */
@@ -272,7 +285,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 277 2009-08-20 19:41:40Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 289 2010-05-24 14:53:25Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -328,7 +341,7 @@ static int satoi(const char *str) {
 }
 
 #ifdef RSERV_DEBUG
-void printDump(void *b, int len) {
+static void printDump(void *b, int len) {
     int i=0;
     if (len<1) { printf("DUMP FAILED (len=%d)\n",len); };
     printf("DUMP [%d]:",len);
@@ -340,7 +353,7 @@ void printDump(void *b, int len) {
 }
 #endif
 
-void sendResp(int s, int rsp) {
+static void sendResp(int s, int rsp) {
     struct phdr ph;
     memset(&ph,0,sizeof(ph));
     ph.cmd=itop(rsp|CMD_RESP);
@@ -351,7 +364,7 @@ void sendResp(int s, int rsp) {
     send(s,(char*)&ph,sizeof(ph),0);
 }
 
-char *getParseName(int n) {
+static char *getParseName(int n) {
     switch(n) {
     case PARSE_NULL: return "null";
     case PARSE_OK: return "ok";
@@ -370,17 +383,17 @@ typedef unsigned long rlen_t;
 #define attrFixup if (hasAttr) buf=storeSEXP(buf,ATTRIB(x));
 #define dist(A,B) (((rlen_t)(((char*)B)-((char*)A)))-4)
 
-rlen_t getStorageSize(SEXP x) {
+static rlen_t getStorageSize(SEXP x) {
     int t=TYPEOF(x);
     unsigned int tl=LENGTH(x);
     rlen_t len=4;
     
 #ifdef RSERV_DEBUG
-    printf("getStorageSize(type=%d,len=%d)\n",t,tl);
+    printf("getStorageSize(%p,type=%d,len=%d) ",x, t,tl);
 #endif
-    if (TYPEOF(ATTRIB(x)) == LISTSXP) {
-		rlen_t alen=getStorageSize(ATTRIB(x));
-		len+=alen;
+    if (t != CHARSXP && TYPEOF(ATTRIB(x)) == LISTSXP) {
+		rlen_t alen = getStorageSize(ATTRIB(x));
+		len += alen;
     }
     switch (t) {
     case LISTSXP:
@@ -427,11 +440,19 @@ rlen_t getStorageSize(SEXP x) {
 		}
 		break;
     case STRSXP:
+		{
+			int i = 0;
+			while (i < tl) {
+				len += getStorageSize(STRING_ELT(x, i));
+				i++;
+			}
+		}
+		break;
     case EXPRSXP:
     case VECSXP:
 		{
 			int i=0;
-			while(i<LENGTH(x)) {
+			while(i < tl) {
 				len+=getStorageSize(VECTOR_ELT(x,i));
 				i++;
 			}
@@ -445,10 +466,13 @@ rlen_t getStorageSize(SEXP x) {
     }
     if (len>0xfffff0) /* large types must be stored in the new format */
 		len+=4;
+#ifdef RSERV_DEBUG
+    printf("= %u\n", (unsigned int) len);
+#endif
     return len;
 }
 
-unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
+static unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
     int t=TYPEOF(x);
     int i;
     int hasAttr=0;
@@ -460,7 +484,8 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		*buf=itop(XT_NULL); buf++; goto didit;
     }
     
-    if (TYPEOF(ATTRIB(x)) == LISTSXP) hasAttr=XT_HAS_ATTR;
+    if (t != CHARSXP && TYPEOF(ATTRIB(x)) == LISTSXP)
+		hasAttr = XT_HAS_ATTR;
     
     if (t==NILSXP) {
 		*buf=itop(XT_NULL|hasAttr);
@@ -654,11 +679,15 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x) {
 		preBuf[1]=itop(txlen>>24);
     } else
 		*preBuf=itop(SET_PAR(PAR_TYPE(ptoi(*preBuf)),dist(preBuf,buf)));
-    
+
+#ifdef RSERV_DEBUG
+	printf("stored %p at %p, %u bytes\n", x, preBuf, (unsigned int) dist(preBuf, buf));
+#endif
+
     return buf;
 }
 
-void printSEXP(SEXP e) /* merely for debugging purposes
+static void printSEXP(SEXP e) /* merely for debugging purposes
 						  in fact Rserve binary transport supports
 						  more types than this function. */
 {
@@ -791,7 +820,7 @@ void printSEXP(SEXP e) /* merely for debugging purposes
    UNPROTECT calls which will be necessary after we're done.
    The buffer position is advanced to the point where the SEXP ends
    (more precisely it points to the next stored SEXP). */
-SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
+static SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 {
     unsigned int *b=*buf, *pab=*buf;
     char *c,*cc;
@@ -1048,7 +1077,7 @@ struct args {
 };
 
 /* send a response including the data part */
-void sendRespData(int s, int rsp, int len, void *buf) {
+static void sendRespData(int s, int rsp, int len, void *buf) {
     struct phdr ph;
     memset(&ph,0,sizeof(ph));
     ph.cmd=itop(rsp|CMD_RESP);
@@ -1079,58 +1108,94 @@ int usePlain=0;
 /* max. size of the input buffer (per connection) */
 int maxInBuf=256*(1024*1024); /* default is 256MB */
 
+/* if non-zero then the password file is loaded before client su so it can be unreadable by the clients */
+int cache_pwd = 0;
+char *pwd_cache;
+
+/* if client_su is set then Rserve switches uid/gid */
+#define SU_NOW    0
+#define SU_SERVER 1
+#define SU_CLIENT 2
+static int su_time = SU_NOW;
+#ifdef unix
+static int new_gid = -1, new_uid = -1;
+#endif
+
+static void load_pwd_cache() {
+	FILE *f = fopen(pwdfile, "r");
+	if (f) {
+		int fs = 0;
+		fseek(f, 0, SEEK_END);
+		fs = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		pwd_cache = (char*) malloc(fs + 1);
+		if (pwd_cache) {
+			if (fread(pwd_cache, 1, fs, f) != fs) {
+				free(pwd_cache);
+				pwd_cache = 0;
+			} else
+				pwd_cache[fs] = 0;
+		}
+		fclose(f);
+	}
+}
+
 struct source_entry {
     struct source_entry* next;
     char line[8];
 } *src_list=0, *src_tail=0;
 
 /* load config file */
-int loadConfig(char *fn)
+static int loadConfig(char *fn)
 {
-    FILE *f;
-    char buf[512];
-    char *c,*p,*c1;
+	FILE *f;
+	char buf[512];
+	char *c,*p,*c1;
     
 #ifdef RSERV_DEBUG
-    printf("Loading config file %s\n",fn);
+	printf("Loading config file %s\n",fn);
 #endif
-    f=fopen(fn,"r");
-    if (!f) {
+	f = fopen(fn,"r");
+	if (!f) {
 #ifdef RSERV_DEBUG
 		printf("Failed to find config file %s\n",fn);
 #endif
 		return -1;
-    }
-    buf[511]=0;
-    while(!feof(f))
+	}
+	
+	buf[511] = 0;
+	while(!feof(f))
 		if (fgets(buf,511,f)) {
-			c=buf;
-			while(*c==' '||*c=='\t') c++;
-			p=c;
-			while(*p && *p!='\t' && *p!=' ' && *p!='=' && *p!=':') p++;
-			if (*p) {
-				*p=0;
+			c = buf;
+			while(*c == ' ' || *c == '\t') c++;
+			p = c;
+			while(*p && *p != '\t' && *p != ' ' && *p != '=' && *p != ':')
 				p++;
-				while(*p && (*p=='\t' || *p==' ')) p++;
+			if (*p) {
+				*p = 0;
+				p++;
+				while(*p && (*p == '\t' || *p == ' ')) p++;
 			}
-			c1=p;
-			while(*c1) if(*c1=='\n'||*c1=='\r') *c1=0; else c1++;
+			c1 = p;
+			while(*c1)
+				if(*c1 == '\n' || *c1 == '\r') *c1 = 0; else c1++;
+
 #ifdef RSERV_DEBUG
 			printf("conf> command=\"%s\", parameter=\"%s\"\n", c, p);
 #endif
 			if (!strcmp(c,"remote"))
-				localonly=(*p=='1' || *p=='y' || *p=='e')?0:1;
+				localonly = (*p == '1' || *p == 'y' || *p == 'e') ? 0 : 1;
 			if (!strcmp(c,"port")) {
 				if (*p) {
-					int np=satoi(p);
-					if (np>0) port=np;
+					int np = satoi(p);
+					if (np > 0) port = np;
 				}
 			}
 			if (!strcmp(c,"maxinbuf")) {
 				if (*p) {
-					int ns=atoi(p);
-					if (ns>32)
-						maxInBuf=ns*1024;
+					int ns = atoi(p);
+					if (ns > 32)
+						maxInBuf = ns * 1024;
 				}
 			}
 			if (!strcmp(c,"source") || !strcmp(c,"eval")) {
@@ -1162,20 +1227,26 @@ int loadConfig(char *fn)
 				}
 			}
 #ifdef unix
+			if (!strcmp(c, "su") && *p) {
+				if (*p == 'n') su_time = SU_NOW;
+				else if (*p == 's') su_time = SU_SERVER;
+				else if (*p == 'c') su_time = SU_CLIENT;
+				else fprintf(stderr, "su value invalid - must be 'now', 'server' or 'client'.\n");
+			}
 			if (!strcmp(c,"uid") && *p) {
-				int nuid=satoi(p);
-				if (setuid(nuid))
-					fprintf(stderr,"setuid(%d): failed. no user switch performed.",nuid);
+				new_uid = satoi(p);
+				if (su_time == SU_NOW && setuid(new_uid))
+					fprintf(stderr, "setuid(%d): failed. no user switch performed.\n", new_uid);
 			}
 			if (!strcmp(c,"gid") && *p) {
-				int ngid=satoi(p);
-				if (setgid(ngid))
-					fprintf(stderr,"setgid(%d): failed. no group switch performed.",ngid);
+				new_gid = satoi(p);
+				if (su_time == SU_NOW && setgid(new_gid))
+					fprintf(stderr, "setgid(%d): failed. no group switch performed.\n", new_gid);
 			}
 			if (!strcmp(c,"chroot") && *p) {
 				if (chroot(p)) {
 					perror("chroot");
-					fprintf(stderr,"chroot(\"%s\"): failed.", p);
+					fprintf(stderr,"chroot(\"%s\"): failed.\n", p);
 				}
 			}
 			if (!strcmp(c,"umask") && *p)
@@ -1210,11 +1281,13 @@ int loadConfig(char *fn)
 			if (!strcmp(c,"pwdfile"))
 				pwdfile = (*p) ? strdup(p) : 0;
 			if (!strcmp(c,"auth"))
-				authReq=(*p=='1' || *p=='y' || *p=='r' || *p=='e')?1:0;
+				authReq=(*p=='1' || *p=='y' || *p=='r' || *p=='e') ? 1 : 0;
 			if (!strcmp(c,"plaintext"))
-				usePlain=(*p=='1' || *p=='y' || *p=='e')?1:0;
+				usePlain=(*p=='1' || *p=='y' || *p=='e') ? 1 : 0;
 			if (!strcmp(c,"fileio"))
-				allowIO=(*p=='1' || *p=='y' || *p=='e')?1:0;
+				allowIO=(*p=='1' || *p=='y' || *p=='e') ? 1 : 0;
+			if (!strcmp(c, "cachepwd"))
+				cache_pwd = (*p == 'i') ? 2 : ((*p == '1' || *p == 'y' || *p == 'e') ? 1 : 0);
 		}
     fclose(f);
 #ifndef HAS_CRYPT
@@ -1226,7 +1299,10 @@ int loadConfig(char *fn)
 #ifdef RSERV_DEBUG
     printf("Loaded config file %s\n",fn);
 #endif
-    return 0;
+
+	if (cache_pwd == 2) load_pwd_cache();
+				
+	return 0;
 }
 
 /* size of the input buffer (default 512kB)
@@ -1476,6 +1552,9 @@ SOCKET resume_session() {
 	return -1;
 }
 
+#ifdef WIN32
+# include <process.h>
+#endif
 typedef struct child_process {
 	pid_t pid;
 	int   inp;
@@ -1483,6 +1562,55 @@ typedef struct child_process {
 } child_process_t;
 
 child_process_t *children;
+
+/* handling of the password file - we emulate stdio API but allow both
+   file and buffer back-ends transparently */
+typedef struct pwdf {
+	FILE *f;
+	char *ptr;
+} pwdf_t;
+	
+	
+static pwdf_t *pwd_open() {
+	pwdf_t *f = malloc(sizeof(pwdf_t));
+	if (!f) return 0;
+	if (cache_pwd && pwd_cache) {
+		f->ptr = pwd_cache;
+		f->f = 0;
+		return f;
+	}
+	f->f = fopen(pwdfile, "r");
+	if (!f->f) {
+		free(f);
+		return 0;
+	}
+	return f;
+}
+	
+static char *pwd_gets(char *str, int n, pwdf_t *f) {
+	char *c, *s = str;
+	if (f->f) return fgets(str, n, f->f);
+	c = f->ptr;
+	while (*c == '\r' || *c == '\n') c++; /* skip empty lines */
+	while (*c && *c != '\r' && *c != '\n' && (--n > 0)) *(s++) = *(c++);
+	if (*c == '\n' || *c == '\r') {
+		*c = 0; c++;
+	}
+	f->ptr = c;
+	*s = 0;
+	return str;
+}
+	
+static int pwd_eof(pwdf_t *f) {
+	if (f->f) return feof(f->f);
+	return (f->ptr[0]) ? 0 : 1;
+}
+	
+static void pwd_close(pwdf_t *f) {
+	if (f->f)
+		fclose(f->f);
+	free(f);
+}
 
 /* working thread/function. the parameter is of the type struct args* */
 decl_sbthread newConn(void *thp) {
@@ -1501,7 +1629,9 @@ decl_sbthread newConn(void *thp) {
     int Rerror;
     int authed=0;
     int unaligned=0;
+#ifdef HAS_CRYPT
     char salt[5];
+#endif
     rlen_t tempSB=0;
     
     int parT[16];
@@ -1517,7 +1647,8 @@ decl_sbthread newConn(void *thp) {
 #endif
 
 #ifdef FORKED  
-    long rseed = random();
+
+	long rseed = random();
     rseed ^= time(0);
 	
 	parent_pipe = -1;
@@ -1557,6 +1688,16 @@ decl_sbthread newConn(void *thp) {
     
     parentPID=getppid();
     closesocket(a->ss); /* close server socket */
+
+#ifdef unix
+	if (cache_pwd)
+		load_pwd_cache();/* load pwd file into memory before su */
+	if (su_time == SU_CLIENT) { /* if requested set gid/pid as client */
+		if (new_gid != -1) setgid(new_gid);
+		if (new_uid != -1) setuid(new_uid);
+	}
+#endif
+
 #endif
     
     buf=(char*) malloc(inBuf+8);
@@ -1777,28 +1918,29 @@ decl_sbthread newConn(void *thp) {
 				printf("Authentication attempt (login='%s',pwd='%s',pwdfile='%s')\n",c,cc,pwdfile);
 #endif
 				if (pwdfile) {
+					pwdf_t *pwf;
 					int ctrl_flag = 0;
-					authed=0; /* if pwdfile exists, default is access denied */
+					authed = 0; /* if pwdfile exists, default is access denied */
 					/* TODO: opening pwd file, parsing it and responding
 					   might be a bad idea, since it allows DOS attacks as this
 					   operation is fairly costly. We should actually cache
-					   the user list and reload it only on HUP or something */
+					   the user list and reload it only on HUP or something. */
 					/* we abuse variables of other commands since we are
 					   the first command ever used so we can trash them */
-					cf=fopen(pwdfile,"r");
-					if (cf) {
-						sfbuf[sfbufSize-1]=0;
-						while(!feof(cf))
-							if (fgets(sfbuf,sfbufSize-1,cf)) {
-								c1=sfbuf;
-								while(*c1 && *c1!=' ' && *c1!='\t') c1++;
+					pwf = pwd_open();
+					if (pwf) {
+						sfbuf[sfbufSize - 1] = 0;
+						while(!pwd_eof(pwf))
+							if (pwd_gets(sfbuf, sfbufSize - 1, pwf)) {
+								c1 = sfbuf;
+								while(*c1 && *c1 != ' ' && *c1 != '\t') c1++;
 								if (*c1) {
-									*c1=0;
+									*c1 = 0;
 									c1++;
-									while(*c1==' ' || *c1=='\t') c1++;
-								};
-								c2=c1;
-								while(*c2) if (*c2=='\r'||*c2=='\n') *c2=0; else c2++;
+									while(*c1 == ' ' || *c1 == '\t') c1++;
+								}
+								c2 = c1;
+								while(*c2) if (*c2 == '\r' || *c2=='\n') *c2 = 0; else c2++;
 								ctrl_flag = 0;
 								if (*c == '@') { /* only users with @ prefix can use control commands */
 									c++;
@@ -1835,9 +1977,9 @@ decl_sbthread newConn(void *thp) {
 								}
 								if (authed) break;
 							} /* if fgets */
-						fclose(cf);
-					} /* if (cf) */
-					cf=0;
+						pwd_close(pwf);
+					} /* if (pwf) */
+					cf = 0;
 					if (authed) {
 						can_control = ctrl_flag;
 						process=1;
@@ -2257,6 +2399,10 @@ decl_sbthread newConn(void *thp) {
 							   todo: resize the buffer as necessary
 							*/
 							rlen_t rs=getStorageSize(exp);
+							/* increase the buffer by 25% for safety */
+							/* FIXME: there are issues with multi-byte strings that expand when
+							   converted. They should be convered by this margin but it is an ugly hack!! */
+							rs += (rs >> 2);
 #ifdef RSERV_DEBUG
 							printf("result storage size = %d bytes\n",(int)rs);
 #endif
@@ -2608,7 +2754,7 @@ int main(int argc, char **argv)
 	}
 
 #ifdef RSERV_DEBUG
-    printf("Rserve %d.%d-%d (%s) (C)Copyright 2002-8 Simon Urbanek\n%s\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255, rserve_rev, rserve_ver_id);
+    printf("Rserve %d.%d-%d (%s) (C)Copyright 2002-2010 Simon Urbanek\n%s\n\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255, rserve_rev, rserve_ver_id);
 #endif
     if (!isByteSexOk()) {
 		printf("FATAL ERROR: This program was not correctly compiled - the endianess is wrong!\nUse -DSWAPEND when compiling on PPC or similar platforms.\n");
@@ -2723,6 +2869,15 @@ int main(int argc, char **argv)
 		printf("Done with initial commands.\n");
 #endif
     }
+	
+#ifdef unix
+	/* if server su is enabled, do it now */
+	if (su_time == SU_SERVER) {
+		if (new_gid != -1) setgid(new_gid);
+		if (new_uid != -1) setuid(new_uid);
+	}
+#endif
+	
 #if defined RSERV_DEBUG || defined Win32
     printf("Rserve: Ok, ready to answer queries.\n");
 #endif      

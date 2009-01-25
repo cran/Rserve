@@ -17,7 +17,7 @@ import org.rosuda.REngine.Rserve.RConnection;
     The current implementation supports long (0.3+/0102) data format only
     up to 32-bit and only for incoming packets.
     <p>
-    @version $Id: RTalk.java 3156 2009-08-12 15:35:30Z urbanek $
+    @version $Id: RTalk.java 3247 2010-01-26 11:40:59Z urbanek $
 */
 public class RTalk {
     public static final int DT_INT=1;
@@ -225,6 +225,7 @@ public class RTalk {
 	    }
 	    return new RPacket(rep,null);
 	} catch(Exception e) {
+	    e.printStackTrace();
 	    return null;
 	}
     }
@@ -236,7 +237,7 @@ public class RTalk {
     public RPacket request(int cmd, String par) {
 	try {
             byte[] b=par.getBytes(RConnection.transferCharset);
-            int sl=par.length()+1;
+            int sl=b.length+1;
             if ((sl&3)>0) sl=(sl&0xfffffc)+4; // make sure the length is divisible by 4
 	    byte[] rq=new byte[sl+5];
             int i;
@@ -248,7 +249,8 @@ public class RTalk {
 	    setHdr(DT_STRING,sl,rq,0);
 	    return request(cmd,rq);
 	} catch (Exception e) {
-	};
+	    e.printStackTrace();
+	}
 	return null;
     }
 

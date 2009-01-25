@@ -65,6 +65,40 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 	/** canonical NULL object */
 	public REXPNull nullValue;
 	
+	/** class used for wrapping raw pointers such that they are adequately protected and released according to the lifespan of the Java object */
+	class JRIPointer {
+		long ptr;
+		JRIPointer(long ptr, boolean preserve) {
+			this.ptr = ptr;
+			if (preserve && ptr != 0 && ptr != R_NilValue) {
+				boolean obtainedLock = rniMutex.safeLock(); // this will inherently wait for R to become ready
+				try {
+					rni.rniPreserve(ptr);
+				} finally {
+					if (obtainedLock) rniMutex.unlock();
+				}
+			}
+		}
+		
+		protected void finalize() throws Throwable {
+			try {
+				if (ptr != 0 && ptr != R_NilValue) {
+					boolean obtainedLock = rniMutex.safeLock();
+					try {
+						rni.rniRelease(ptr);
+					} finally {
+						if (obtainedLock)
+							rniMutex.unlock();
+					}
+				}
+			} finally {
+				super.finalize();
+			}
+		}	
+		
+		long pointer() { return ptr; }
+	}
+	
 	/** factory method called by <code>engineForClass</code> 
 	 @return new or current engine (new if there is none, current otherwise since R allows only one engine at any time) */
 	public static REngine createEngine() throws REngineException {
@@ -137,6 +171,10 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 		} finally {
 			if (obtainedLock) rniMutex.unlock();
 		}
+		// register ourself as the main and last engine
+		lastEngine = this;
+		if (jriEngine == null)
+			jriEngine = this;
 	}
 	
 	/** creates a JRI engine with specified delegate for callbacks (JRI compatibility mode ONLY! Will be deprecated soon!)
@@ -170,6 +208,10 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 		} finally {
 			if (obtainedLock) rniMutex.unlock();
 		}
+		// register ourself as the main and last engine
+		lastEngine = this;
+		if (jriEngine == null)
+			jriEngine = this;
 	}
 	
 	/** WARNING: legacy fallback for hooking from R into an existing Rengine - do NOT use for creating a new Rengine - it will go away eventually */
@@ -194,7 +236,11 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 		} finally {
 			if (obtainedLock) rniMutex.unlock();
 		}
-	}	
+		// register ourself as the main and last engine
+		lastEngine = this;
+		if (jriEngine == null)
+			jriEngine = this;
+	}
 	
 	public REXP parse(String text, boolean resolve) throws REngineException {
 		REXP ref = null;
@@ -220,7 +266,7 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			if (!where.isEnvironment() || ((REXPEnvironment)where).getHandle() == null)
 				throw(new REXPMismatchException(where, "environment"));
 			else
-				rho = ((Long)((REXPEnvironment)where).getHandle()).longValue();
+				rho = ((JRIPointer)((REXPEnvironment)where).getHandle()).pointer();
 		} else
 			if (where != null) rho = ((Long)((REXPReference)where).getHandle()).longValue();
 		if (what == null) throw(new REngineException(this, "null object to evaluate"));
@@ -257,7 +303,7 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			if (!env.isEnvironment() || ((REXPEnvironment)env).getHandle() == null)
 				throw(new REXPMismatchException(env, "environment"));
 			else
-				rho = ((Long)((REXPEnvironment)env).getHandle()).longValue();
+				rho = ((JRIPointer)((REXPEnvironment)env).getHandle()).pointer();
 		} else
 			if (env != null) rho = ((Long)((REXPReference)env).getHandle()).longValue();
 		if (value == null) value = nullValueRef;
@@ -281,7 +327,7 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			if (!env.isEnvironment() || ((REXPEnvironment)env).getHandle() == null)
 				throw(new REXPMismatchException(env, "environment"));
 			else
-				rho = ((Long)((REXPEnvironment)env).getHandle()).longValue();
+				rho = ((JRIPointer)((REXPEnvironment)env).getHandle()).pointer();
 		} else
 			if (env != null) rho = ((Long)((REXPReference)env).getHandle()).longValue();
 		boolean obtainedLock = rniMutex.safeLock();
@@ -419,7 +465,8 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 					break;
 					
 				case ENVSXP:
-					res = new REXPEnvironment(this, new Long(ptr));
+					if (ptr != 0) rni.rniPreserve(ptr);
+					res = new REXPEnvironment(this, new JRIPointer(ptr, false));
 					break;
 					
 				case S4SXP:
@@ -438,6 +485,13 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 		if (value.isReference()) return value;
 		long ptr = createReferencePointer(value);
 		if (ptr == 0) return null;
+		boolean obtainedLock = rniMutex.safeLock();
+		try {
+			rni.rniPreserve(ptr);
+		} finally {
+			if (obtainedLock)
+				rniMutex.unlock();
+		}
 		return new REXPReference(this, new Long(ptr));
 	}
 	
@@ -477,13 +531,13 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			else if (value.isString())
 				ptr = rni.rniPutStringArray(value.asStrings());
 			else if (value.isEnvironment()) {
-				Long l = (Long) ((REXPEnvironment)value).getHandle();
+				JRIPointer l = (JRIPointer) ((REXPEnvironment)value).getHandle();
 				if (l == null) { // no associated reference, create a new environemnt
 					long p = rni.rniParse("new.env(parent=baseenv())", 1);
 					ptr = rni.rniEval(p, 0);
 					/* TODO: should we handle REngineEvalException.ERROR and REngineEvalException.INVALID_INPUT here, for completeness */
 				} else
-					ptr = l.longValue();
+					ptr = l.pointer();
 			} else if (value.isPairList()) { // LISTSXP / LANGSXP
 				boolean lang = value.isLanguage();
 				RList rl = value.asList();
@@ -579,13 +633,14 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 			if (!env.isEnvironment() || ((REXPEnvironment)env).getHandle() == null)
 				throw(new REXPMismatchException(env, "environment"));
 			else
-				rho = ((Long)((REXPEnvironment)env).getHandle()).longValue();
+				rho = ((JRIPointer)((REXPEnvironment)env).getHandle()).pointer();
 		} else
 			if (env != null) rho = ((Long)((REXPReference)env).getHandle()).longValue();
 		boolean obtainedLock = rniMutex.safeLock();
 		try {
 			long pr = rni.rniParentEnv(rho);
 			if (pr == 0 || pr == R_NilValue) return null; // this should never happen, really
+			rni.rniPreserve(pr);
 			ref = new REXPReference(this, new Long(pr));
 			if (resolve)
 				ref = resolveReference(ref);
@@ -605,13 +660,14 @@ public class JRIEngine extends REngine implements RMainLoopCallbacks {
 				if (!parent.isEnvironment() || ((REXPEnvironment)parent).getHandle() == null)
 					throw(new REXPMismatchException(parent, "environment"));
 				else
-					rho = ((Long)((REXPEnvironment)parent).getHandle()).longValue();
+					rho = ((JRIPointer)((REXPEnvironment)parent).getHandle()).pointer();
 			} else
 				if (parent != null) rho = ((Long)((REXPReference)parent).getHandle()).longValue();
 			if (rho == 0)
 				rho = ((Long)((REXPReference)globalEnv).getHandle()).longValue();
 			long p = rni.rniEval(rni.rniLCons(rni.rniInstallSymbol("new.env"), rni.rniCons(rho, R_NilValue, rni.rniInstallSymbol("parent"), false)), 0);
 			/* TODO: should we handle REngineEvalException.INVALID_INPUT and REngineEvalException.ERROR here, for completeness */
+			if (p != 0) rni.rniPreserve(p);
 			ref = new REXPReference(this, new Long(p));
 			if (resolve)
 				ref = resolveReference(ref);
