@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: Rserv.c 312 2011-05-16 12:41:40Z urbanek $
+ *  $Id: Rserv.c 325 2011-10-19 14:57:46Z urbanek $
  */
 
 /* external defines:
@@ -308,7 +308,7 @@ static int umask_value = 0;
 
 static char **allowed_ips = 0;
 
-static const char *rserve_ver_id = "$Id: Rserv.c 312 2011-05-16 12:41:40Z urbanek $";
+static const char *rserve_ver_id = "$Id: Rserv.c 325 2011-10-19 14:57:46Z urbanek $";
 
 static char rserve_rev[16]; /* this is generated from rserve_ver_id by main */
 
@@ -359,9 +359,9 @@ static int satoi(const char *str) {
 	if (!str) return 0;
 	if (str[0]=='0') {
 		if (str[1]=='x')
-			return strtol(str, 0, 16);
+			return strtol(str + 2, 0, 16);
 		if (str[1]>='0' && str[1]<='9')
-			return strtol(str, 0, 8);
+			return strtol(str + 1, 0, 8);
 	}
 	return atoi(str);
 }
@@ -690,9 +690,8 @@ static unsigned int* storeSEXP(unsigned int* buf, SEXP x, rlen_t storage_size) {
 		attrFixup;
 		strcpy((char*)buf, val);
 		sl = strlen((char*)buf); sl++;
-		while (sl & 3) { /* pad by 0 to a length divisible by 4 (since 0.1-10) */
-			buf[sl] = 0; sl++;
-		}
+		while (sl & 3) /* pad by 0 to a length divisible by 4 (since 0.1-10) */
+			((char*)buf)[sl++] = 0;
 		buf = (unsigned int*)(((char*)buf) + sl);
 		goto didit;
     }
@@ -1043,6 +1042,12 @@ static SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 		*buf = (unsigned int*)((char*)b + ln);
 		break;
 
+	case XT_S4:
+		val = Rf_allocS4Object();
+		PROTECT(val);
+		(*UPC)++;
+		break;
+
 	case XT_LIST_NOTAG:
 	case XT_LIST_TAG:
 	case XT_LANG_NOTAG:
@@ -1084,7 +1089,8 @@ static SEXP decode_to_SEXP(unsigned int **buf, int *UPC)
 			break;
 		}
 	default:
-		error("unsupported type %d\n", ty);
+		REprintf("Rserve SEXP parsing: unsupported type %d\n", ty);
+		val = R_NilValue;
 		*buf = (unsigned int*)((char*)b + ln);
     }
 

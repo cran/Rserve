@@ -11,7 +11,7 @@ import org.rosuda.REngine.*;
 import org.rosuda.REngine.Rserve.protocol.*;
 
 /**  class providing TCP/IP connection to an Rserve
-     @version $Id: RConnection.java 3156 2009-08-12 15:35:30Z urbanek $
+     @version $Id: RConnection.java 3404 2011-07-28 14:57:31Z urbanek $
 */
 public class RConnection extends REngine {
     /** last error string */
@@ -151,7 +151,8 @@ public class RConnection extends REngine {
 	
     public void finalize() {
         close();
-        is=null; is=null;
+        is=null;
+	os=null;
     }
 
     /** get server version as reported during the handshake.
