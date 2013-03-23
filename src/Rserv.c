@@ -176,6 +176,8 @@ typedef unsigned long rlen_t;
 #endif
 #endif
 
+#include <sisocks.h>
+
 /* we have no configure for Win32 so we have to take care of socklen_t */
 #ifdef Win32
 typedef int socklen_t;
@@ -186,7 +188,6 @@ typedef int socklen_t;
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sisocks.h>
 #include <string.h>
 #ifdef unix
 #if TIME_WITH_SYS_TIME

@@ -1,11 +1,11 @@
 Package: Rserve
-Version: 0.6-8
+Version: 0.6-8.1
 Title: Binary R server
 Author: Simon Urbanek <Simon.Urbanek@r-project.org>
 Maintainer: Simon Urbanek <Simon.Urbanek@r-project.org>
 Depends: R (>= 1.5.0)
-SystemRequirements: R must be compiled with --enable-R-shlib if the
-        server is to be built
+SystemRequirements: GNU make, R must be compiled with --enable-R-shlib
+        if the server is to be built
 Description: Rserve acts as a socket server (TCP/IP or local sockets)
         which allows binary requests to be sent to R. Every connection
         has a separate workspace and working directory. Client-side
@@ -17,4 +17,8 @@ Description: Rserve acts as a socket server (TCP/IP or local sockets)
 License: GPL-2
 URL: http://www.rforge.net/Rserve/
 Repository: CRAN
-Date/Publication: 2012-02-20 20:06:18
+Date/Publication: 2013-03-23 19:43:53
+Packaged: 2013-03-23 18:32:54 UTC; ligges
+NeedsCompilation: yes
+X-CRAN-Original-SystemRequirements: R must be compiled with
+        --enable-R-shlib if the server is to be built
