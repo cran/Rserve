@@ -32,7 +32,7 @@
 #include "config.h"
 #endif
 
-#define RSRV_VER 0x010702 /* Rserve v1.7-2 */
+#define RSRV_VER 0x010703 /* Rserve v1.7-3 */
 
 #define default_Rsrv_port 6311
 
@@ -126,6 +126,8 @@ struct phdr { /* always 16 bytes */
 
 /* flag for create_server: Use QAP object-cap mode */
 #define SRV_QAP_OC 0x40
+/* mask of all flags that are relevant to QAP (so they can be passed through) */
+#define SRV_QAP_FLAGS (SRV_QAP_OC)
 
 /* stat codes; 0-0x3f are reserved for program specific codes - e.g. for R
    connection they correspond to the stat of Parse command.
