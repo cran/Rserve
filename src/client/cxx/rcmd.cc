@@ -15,7 +15,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  $Id: rcmd.cc 250 2009-01-13 18:17:22Z urbanek $
+ *  $Id$
  */
 
 #define MAIN         // we are the main program, we need to define this

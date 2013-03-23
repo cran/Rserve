@@ -1,5 +1,5 @@
 # Process this file with autoconf to produce a configure script.
-AC_INIT([Rserve],[0.4],[Simon.Urbanek@r-project.org])
+AC_INIT([Rserve],[1.7],[Simon.Urbanek@r-project.org])
 AC_CONFIG_SRCDIR([src/Rserv.c])
 AC_CONFIG_HEADER([src/config.h])
 
@@ -17,6 +17,12 @@ AC_ARG_WITH([server],
 AC_ARG_WITH([client],
 	AS_HELP_STRING(--with-client,[compile additional C/C++ Rserve client (default is @<:@no@:>@). The client can be always compiled manually regardless of this setting.]),
 	[with_client=$withval], [with_client=no])
+
+AC_ARG_ENABLE([ipv6],
+[AC_HELP_STRING([--enable-ipv6],
+		[enable the use of IPv6 protocol. @<:@no@:>@])],
+[want_ipv6="${enableval}"],
+[want_ipv6=no])
 
 RLD=`${R_HOME}/bin/R CMD config --ldflags 2>/dev/null`
 has_R_shlib=no
@@ -58,9 +64,17 @@ CPPFLAGS="${CPPFLAGS} ${PKG_CPPFLAGS}"
 CFLAGS=`${R_HOME}/bin/R CMD config CFLAGS`
 CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
 RINC=`${R_HOME}/bin/R CMD config --cppflags`
+LIBS="${LIBS} ${PKG_LIBS}"
 AC_SUBST(R_HOME)
 AC_SUBST(RINC)
 AC_SUBST(RLD)
+
+AC_ARG_VAR([OPENSSL_INCLUDES],[optional path to the include directory for OpenSSL headers])
+AC_ARG_VAR([PKG_CPPFLAGS],[additional pre-processor flags])
+AC_ARG_VAR([PKG_LIBS],[additional linker library flags])
+if test "x${OPENSSL_INCLUDES}" != x; then
+   CPPFLAGS="${CPPFLAGS} -I${OPENSSL_INCLUDES}"
+fi
 
 # Checks for programs.
 AC_PROG_CC
@@ -97,7 +111,7 @@ AC_HEADER_TIME
 # Checks for library functions.
 AC_FUNC_FORK
 AC_TYPE_SIGNAL
-AC_CHECK_FUNCS([memset mkdir rmdir select socket])
+AC_CHECK_FUNCS([memset mkdir rmdir select socket srandomdev])
 
 # Check whether we can use crypt (and if we do if it's in the crypt library)
 AC_SEARCH_LIBS(crypt, crypt,
@@ -143,9 +157,42 @@ if test x"$ac_cv_func_connect" = x"no"; then
     fi
 fi
 
+# IPv6
+have_ipv6=no
+AC_MSG_CHECKING([whether to enable IPv6])
+if test "$want_ipv6" = yes; then
+AC_MSG_RESULT([yes])
+AC_MSG_CHECKING([for working IPv6 sockets])
+AC_LINK_IFELSE([
+#include <sys/socket.h>
+#include <netinet/in.h>
+int main(void) {
+    struct sockaddr_in6 sin;
+    int i = socket(PF_INET6, SOCK_STREAM, 0);
+    sin.sin6_family = AF_INET6;
+    sin.sin6_addr = in6addr_any;
+    return 0;
+}
+],[AC_MSG_RESULT(yes)
+have_ipv6=yes],[AC_MSG_RESULT(no)])
+else
+AC_MSG_RESULT([no])
+fi
+if test "$have_ipv6" = yes; then
+   AC_DEFINE(HAVE_IPV6, 1, [IPv6 support present and enabled])
+fi
+
 # on some platforms libR expects dl code in the binary
 AC_CHECK_LIB(dl, dlopen)
 
-AC_CONFIG_FILES([src/Makefile])
+# check RSA/crypto
+AC_CHECK_HEADER([openssl/rsa.h],
+[AC_SEARCH_LIBS(RSA_generate_key, [crypto ssl openssl], [AC_DEFINE(HAVE_RSA, 1, [RSA crypto support])])])
+
+# check SSL support
+AC_CHECK_HEADER([openssl/ssl.h],
+[AC_SEARCH_LIBS(SSL_CTX_load_verify_locations, [ssl openssl], [AC_DEFINE(HAVE_TLS, 1, [TLS/SSL support])])])
+
+AC_CONFIG_FILES([src/Makevars])
 AC_CONFIG_FILES([src/client/cxx/Makefile])
 AC_OUTPUT

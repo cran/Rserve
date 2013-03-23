@@ -1,6 +1,449 @@
  NEWS/Changelog for Rserve
 ---------------------------
 
+1.7-1	2013-07-02
+    o	remove a spurious character that prevented compilation on Suns
+
+    o	add OPENSSL_INCLUDES precious variable that can be used to
+	point to non-standard location of OpenSSL headers
+
+    o	check the usability of OpenSSL headers before enabling TLS
+	support
+
+    o	added the choice of GPLv2 or GPLv2 with OpenSSL linking exception
+
+
+1.7-0
+
+   ***	---- HEADLINE NEWS ----
+   ***	new protocols: HTTP, HTTPS, WebSockets and TLS/QAP
+   ***	added protocol switching (from QAP to TLS/QAP) via CMD_switch
+   ***	The R client was moved to RSclient package
+   ***	New in-session server support with run.Rserve()
+   ***	Out-of-band messages via self.oobSend()
+   ***  user-based uid/gid switch, MD5/SHA1 stored passwords
+   ***  preliminary IPv6 support; RSA secure authentication
+   ***  .Rserve.done global env hook for optiopnal cleanup
+   ***  auth.function setting to allow custom authentication
+   ***  Object-capability mode for hardened, secure services
+   ***	---- END - see below for details ----
+
+    o	This is the first release in the new 1.x Rserve series. Many
+	of the Rserve internals have been re-written or cleaned
+	up. The original protocol remains the same (so all clients
+	that worked with Rserve 0.6 will continue to work), but the
+	suite of available protocols has been extended (see below).
+
+    o	added support for multiple protocols in Rserve:
+
+        ** QAP **
+	this is the original Rserve protocol used in Rserve 0.x
+	series. It works over TCP/IP and unix sockets. It is
+	enabled by default and can be disabled using
+	"qap disable" configuration directive.
+
+	** HTTP **
+	this is very similar to the built-in R http server except that
+	on unix it forks on connection so it allows parallel separate,
+	persistent connections. It requires a worker function
+	.http.request to be defined in the session which will handle
+	incoming requests. This allows the use of facilities like
+	FastRWeb without an external webserver. This protocol is
+	disabled by default and can be enabled by setting "http.port"
+	configuration directive to the desired port to listen to.
+	(Also see TLS support below for https server).
+
+	The http.raw.body configuration option (default is false which
+	results in the same behavior as Rhttpd) can be used to force
+	passing body in raw form to the handler (useful for the
+	FastRWeb handler which does its own parsing).
+
+	** WebSockets **
+	this protocol is used by HTML5 web browsers for direct access
+	to R with a persistent connection. This allows implementation
+	of websites that have a dedicated R session (and could be used
+	as an R console). There are two subprotocols supported by
+	Rserve:
+
+	  -- WebSocket(*, "QAP") --
+	  this is a tunnel for the original QAP protocol through
+	  WebSockets. It requires a browser capable of binary
+	  WebSockets protocol (version 01 or higher). It allows very
+	  efficient data transfer, typically by loading ArrayBuffers
+	  directly into GPU or CPU.
+	  It is disabled by default and can be enabled using
+	  "websockets.qap enable" configuration directive.
+	  (If no subprotocol is specified, QAP is assumed)
+
+	  -- WebSocket(*, "text") --
+	  this is a very simplistic protocol using plain text frames
+	  to send input to R and output from R directly as text. It
+	  acts essentially as an R console. This protocol works with
+	  any WebSockets implementation including version hybi-00 and
+	  hixie-75/76
+	  It is disabled by default and can be enabled using
+	  "websockets.text enable" configuration directive.
+
+	  NOTE: The textual WebSockets protocol does NOT provide any
+	  authentication mechanism, so use with extreme care as you
+	  are essentially giving any user with a web browser access to
+	  R and thus to the shell.
+	  
+	In addition to enabling each or both subprotocols, the port on
+	which the WebSockets server should listen must be specified in
+	the configuration using "websockets.port" directive, for
+	example "websockets.port 8080". Alternatively, the HTTP server
+	can be enabled to allow connection upgrade to WebSockets on
+	the same port with "http.upgrade.websockets enable"
+
+	NOTE: remember that the default in Rserve is to disallow
+	remote connections, so you may need to use "remote enable" in
+	order to use WebSockets or HTTP in practice, since the point
+	is to serve remote machines. Typically, if both QAP and either
+	HTTP or WebSockets are used, it is recommended to use QAP on a
+	local unix socket for better access control.
+
+    o	Rserve now supports SSL/TLS connections on QAP, HTTP and WS
+	protocols. The TLS key/CA entries are common for all
+	protocols. The relevant new configuration directives are:
+
+	  tls.key <private key PEM file>
+	  tls.cert <server certificate PEM file>
+	  tls.ca <CA PEM file issuing the above certificate>
+
+	SSL/TLS can be used in several ways: with separate port for
+	TLS connections or by switching protocol form a regular QAP
+	connection using CMD_switch with "TLS" as argument. The latter
+	can be enabled using
+
+	  switch.qap.tls enable
+
+	Enabled switching is advertized by Rserve with the presence
+	of a "TLS" entry in the ID string. Keys and other TLS entries
+	must be initialized in order for TLS to be enabled.
+
+	Dedicated TLS servers can be enabled by specifying the port
+	for the corresponding protocol:
+
+ 	  qap.tls.port <port>        - for Rserve/QAP
+	  http.tls.port <port>       - for HTTPS
+	  websockets.tls.port <port> - for WebSockets
+
+	(there are synonyms "https.port" for "http.tls.port" and
+	 "tls.port" for "qap.tls.port", however, the *.tls.port
+	 versions are preferred for clarity)
+
+	The use of TLS protocols is encouraged where sensitive data
+	is transmitted or when requiring secure authentication. For
+	QAP protocol, using TCL/QAP with SHA1 passwords (also new, see
+	below) is the currently recommended way where authorization is
+	required. The only drawback is increased CPU utilization
+	during transfers casued by the encryption and the fact that
+	TLS-enabled clients must be used. See also RSA secure
+	authentication (CMD_keyReq + CMD_secLogin) for a different
+	method if only the authentication step is to be encrypted.
+
+	When enabling TLS tls.key and tls.cert are mandatory, tls.ca
+	is optional to establish CA chain of trust (whether this is
+	needed depends on the client and the certificate). To generate
+	a key and self-signed certificate, you can use something like
+	
+	  openssl genrsa -out server.key 2048
+	  openssl req -new -key server.key -out server.csr
+	  openssl x509 -req -days 365 -in server.csr \
+                  -signkey server.key -out server.crt
+
+	NOTE: TLS services are started **in addition** to any other
+	servers, i.e., if you want to enable TLS/QAP only, you have to
+	set tls.qap.port but also add "qap disable" to disable the
+	plain Rserve access.
+
+    o	QAP servers (classic Rserve QAP, QAP/TLS and WebSocket/QAP)
+	support object-capability (OC) mode in which all Rserve
+	commands are disabled except for CMD_OCcall. All messages
+	including the initial handshake are always QAP and the initial
+	message defines capabilities (here opaque references to
+	closures) that can be called. This mode can be enabled using
+
+	  qap.oc enable    ## for Rserve QAP and QAP/TLS
+	  ws.qap.oc enable ## for WebSocket/QAP
+	
+	In this mode the configuration *must* define a function
+	oc.init (typically using eval or source configuration
+	directives) which has to supply OC references that can be used
+	in calls. If the evaluation of oc.init() fails, the connection
+	is closed immediately. The use of invalid OC references or any
+	other commands other than CMD_OCcall results in immediate
+	connection termination. This allows creation of hardened,
+	secure services that can disallow arbitrary code execution.
+
+	NOTE: this mode is inherenty incompatible with all classic
+	Rserve clients. The first four bytes of the initial packet are
+	"RsOC" instead of "Rsrv"
+
+    o	Rserve can now be started from within an existing R session
+	using run.Rserve() command. This allows the user to prepare a
+	session "by hand", run Rserve from within that session and go
+	back to the session (by shutting down the server or sending an
+	interrupt). This allows the use of Rserve even without the
+	presence of libR.
+
+    o	Rserve now supports out-of-band (OOB) messages. Those can be
+	sent using the self.oobSend() [one-way] and self.oobMessage()
+	[roundtrip] functions from within code that is evaluated in
+	Rserve child instances. OOB messages are not used by Rserve
+	itself but offer asynchronous notification to clients that
+	support it (one typical use are WS-QAP1 tunnels	to web
+	browsers that allow status updates as R code is evaluated).
+
+    o	Rserve accepts additional command line arguments:
+	--RS-source <file>   (same as "source <file>" in cfg file)
+	--RS-enable-remote   (same as "remote enable" in cfg file)
+	--RS-enable-control  (same as "control enable" in cfg file)
+
+    o	The Rserve package no longer includes the R client. It has
+	been moved to a separate package "RSclient" so that it can be
+	used on machines separate from the server.
+
+    o	There was a bug in QAP storage estimation affecting pairlists,
+	possibly resulting in buffer overflows. This should be fixed
+	and an error message will be printed when such overflows are
+	detected in the future (which hopefully won't happen).
+
+    o	Bugfix: command line parsing would skip over some arguments
+
+    o	Passwords file can contain MD5 or SHA1 hash of a password
+	instead of the plaintext password for non-crypt
+	authentication. In that case the hash must be lowercase	hex
+	representation with preceding $ sign, so for example user
+	"foo" with password "bar" would have an entry
+	foo $62cdb7020ff920e5aa642c3d4066950dd1f01f4d
+	You can use
+	  echo -n 'password' | openssl sha1
+  	to obtain the SHA1 hash of a password (openssl md5 for MD5
+	hash - MD5 is probably more common but less secure than
+	SHA1). This feature makes sure that passwords are not stored
+	in plain text and thus are safe from local attacks.
+
+    o	Rserve now has the ability to change uid/gid according to the
+	user that has been authenticated. The following settings
+	concern this feature (unix-only):
+
+	   auto.uid {enable|disable} [disable]
+	   auto.gid {enable}disable} [disable]
+	   default.uid <uid> [none]
+	   default.gid <gid> [none]
+
+	The auto.uid/gid directives enable setuid/setgid based on
+	user's uid/gid. In case no uid/gid is specified with the
+	username, the default.uid/gid settings will be used. If there
+	is no uid/gid in the username and no defaults are specified,
+	the user's authentication will fail. User's uid/gid can be
+	specified in the passwords file by appending /uid,gid to the
+	username. If gid is not specified, uid will be used for both
+	uid and gid. So for example user "foo" (from the above MD5
+	example) with uid=501 would have an entry on the passwords
+	file:
+
+	   foo/501 $37b51d194a7513e45b56f6524f2d51f2
+
+	For this to work, Rserve must be started as root. However,
+	with auto.uid enabled it is safe to do so since Rserve will
+	prevent any R access until authenticated. You should, however,
+	use a client capable of secure RSA authentication or use secure
+	connection such as QAP/TLS as to not send password in
+	cleartext over the wire.
+
+    o	Rserve can now be run in a mode where each connection has a
+	different uid and/or gid such that separate client instances
+	are isolated. This allows more restricted setup in cases where
+	instances may not be trusted and need to be sandboxed. The
+	following configuration directives are associated with this
+	functionality:
+
+	   random.uid {enable|disable} [disable]
+	   random.gui {enable|disable} [disable]
+	   random.uid.range {<from>..<to>} [32768..65540]
+
+	If random.uid is enabled and random.gid disable then only the
+	uid of the process is changed. If both are enabled then the
+	gid is set to match the value of the uid. random.gid cannot be
+	enabled without random.uid.
+
+	To support sandboxing, the permissions on the working
+	directory can be specified using
+
+	   workdir.mode <mode>
+
+    o	If any kind of client-process uid switching is enabled in the
+	configuration, the permissions on the working directory will
+	match the uid of the process. Also the working directories are
+	now named by the process ID to facilitate cleanup.
+
+    o	Rserve now supports secure authentication even outside of
+	SSL/TLS. There are two new commands that can be used by the
+	client:
+	
+	CMD_keyReq   - requests an authentication key from the server
+	               that will be used to perform a secure
+	               login. The kind of the requested key is
+	               specified as a parameter. Currently, only
+	               "rsa-authkey" is supported which returns server
+	               authentication key (authkey) and a RSA public
+	               key which must be used to encode the authkey
+	               and the authentication information (see below).
+		       The RSA key can be compared on the client side
+	               to ensure the authenticity of the server.
+
+	CMD_secLogin - secure login. It consists of an encrypted data
+	               stream that will authenticate the user. In the
+	               case of the "rsa-authkey" method, the stream
+	               consists of the authkey and the login +
+	               password, all of which must be encrypted using
+	               server's RSA key.
+
+	The RSA key on the server (Rserve) side is specified using
+
+	   rsa.key <RSA private key file>
+
+	configuration file directive. The file is expected to be in
+	PEM format. You can generate such file, e.g., with:
+
+	   openssl genrsa -out server.key 4096
+
+	where 4096 is the key size in bits. A public key can be
+	extracted from the private key using
+
+	   openssl rsa -pubout -in server.key -out server_pub.key
+
+	The clients can pre-share the public key by other means to
+	compare it to the key received from the server as to verify
+	its authenticity. This will prevent them from sending the
+	authentication information to rogue servers.
+
+	NOTE: if the rsa.key directive is missing, Rserve will
+	generate a key on the fly when asked for RSA authentication -
+	although this allows encrypted transmission and thus is safe
+	from sniffing, it is not safe from man-in-the-middle attacks
+	where a rogue server intercepts the request and sends its own
+	public key. Therefore the use of the rsa.key directive is
+	highly recommended.
+
+	The RSA authentication enables the client to a) check the
+	authenticity of the server (by comparing the RSA public key)
+	and b) send authentication information encrypted. This method
+	is highly recommended in cases where a full TLS/SSL encryption
+	of the entire connection would be too expensive (i.e. in cases
+	where the data is large and the security of the transported
+	data is not crucial).
+
+    o	Rserve has a preliminary IPv6 support. Rserve must be
+    	installed with --enable-ipv6 configure flag to enable it in
+	the Rserve build. In order to start all servers on IPv6 add
+
+	   ipv6 enable
+
+	to the configuration file. The option is global, i.e. once
+	enabled it applies to all servers that support it. Note that
+	not all features work with IPv6 yet - detaching sessions
+	(they will use IPv4 for re-attach) and remote client filtering
+	only work with IPv4 at this point.
+
+    o	Rserve now binds only to the loopback interface in
+	"remote disable" mode. This is safer and prevents remote DoS
+	attacks. Previously, Rserve would bind on all interfaces and
+	check the peer IP address. If desired, you can replicate the
+	old behavior by adding
+
+	   remote enable
+	   allow 127.0.0.1
+
+	to the configuration (if you don't know the difference then
+	you don't need this -- if you actually need this, then you
+	probably want to add more "allow" entries for the machine's
+	other interfaces as well).
+
+    o	If a function .Rserve.done() is defined in the global
+	environment, it will be run after a clean connection
+	shutdown. This allows custom code to be run when a client
+	connection is closed.
+
+    o	If a function .Rserve.served() is defined in the global
+	environment of the server, it will be run after a client
+	connection has been served. For forked servers this is just
+	after the fork(), for co-operative servers this is after the
+	client conenction has been closed. It is guaranteed that no
+	other client is served before the call so it can be used to
+	manage resources that are unsafe to share with forked
+	processes (e.g. sockets etc.).
+
+    o	The server and client process can be tagged with extra
+	information in argv[0] so it is possible to distinguish the
+	server and children. This behavior can be enabled using
+
+	    tag.argv enable
+
+	Note, however, that this not always possible and it will have
+	impact on programs that use argv[0] such as killall.
+
+    o	Added configuration option pid.file and command-line option
+	--RS-pidfile which instructs Rserve to write its process id
+	(pid) into that file at startup.
+
+    o	Added configuration directives http.user, https.user and
+	websockets.user which take a username and perform
+	setuid/setgid/initgroups immediately after forking.
+	This minimizes the amount of code that is run with
+	elevated privileges in cases where user switching is desired.
+
+    o	Added configuration directive
+
+	   daemon disable
+
+	which can be used to prevent Rserve from daemonizing. It has
+	effect only in builds of Rserve that support daemonization.
+	Note that -DNODAEMON build flag disables daemonization
+	entirely and can be used in any Rserve version.
+
+    o	All commands based on eval now also accept DT_SEXP in addition
+	to DT_STRING. In such case the parse step is skipped and the
+	expression is evaluated directly. The intended use of this
+	functionality is to evaluate language constructs and thus
+	allow calls with both reference and inlined arguments.
+
+    o	QAP decoding is slightly more efficient and avoids protection
+	cascades. QAP_decode() has now only one argument and it	is
+	guaranteed to not increase the protection stack when returning
+	(which implies that it is the responsibility of the caller to
+	protect the result if needed).
+
+    o	Both QAP encoding and decoding now use native copy operations
+	on little-endian machines which can increase the speed
+	considerably when the compiler cannot do this optimization
+	on its own (most commoly used compilers don't).
+
+    o	Assigning logical NAs now uses the proper NA_LOGICAL value
+	that is also recognized by R. (PR#276)
+
+    o	Forked child processes will now close all server sockets so
+	that any server can be restarted without closing existing
+	children.
+
+    o	Signal handling has been streamlined: the server process
+	captures HUP, TERM and INT which will lead to clean
+	shutdown. Child processes restore signal handlers back to R so
+	that regular R signal handling rules apply. Note that
+	interrupt during eval will result in RESP_ERR with code 127
+	even if try() is used.
+
+
+--- In order to support new ideas a major re-organization of Rserve ---
+--- has been started - almost 10 years after the first release.     ---
+--- It is time to look ahead again with a new major version. The    ---
+--- protocol will remain compatible so 1.x series can be used to    ---
+--- replace the previous 0.x series                                 ---
+
+
 0.6-8	2012-02-20
     o	added RSserverEval() and RSserverSource() control commands
 	in the R client as well as ctrl parameter to RSshutdown().

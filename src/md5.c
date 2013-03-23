@@ -22,10 +22,12 @@
    Modified to work better with autoconf and added md5hash
    convenience function (Simon Urbanek, 2005/09/30)
 
-   $Id: md5.c 140 2005-08-31 00:49:09Z urbaneks $
+   $Id$
  */
 
+#ifndef NO_CONFIG_H
 #include "config.h"
+#endif
 
 #ifdef HAVE_MEMORY_H
 #include <memory.h>		 /* for memcpy() */
@@ -79,7 +81,7 @@ void MD5Init(ctx)
  * of bytes.
  */
 void MD5Update(ctx, buf, len)
-    struct MD5Context *ctx; unsigned char *buf; unsigned len;
+    struct MD5Context *ctx; const unsigned char *buf; unsigned len;
 {
     uint32 t;
 
@@ -166,7 +168,7 @@ void MD5Final(digest, ctx)
     MD5Transform(ctx->buf, (uint32 *) ctx->in);
     byteReverse((unsigned char *) ctx->buf, 4);
     memcpy(digest, ctx->buf, 16);
-    memset(ctx, 0, sizeof(ctx));        /* In case it's sensitive */
+    memset(ctx, 0, sizeof(*ctx));        /* In case it's sensitive */
 }
 
 
@@ -274,7 +276,7 @@ void MD5Transform(buf, in)
 static unsigned char m5hash[16];
 
 /* the hash must hold 16 bytes */
-unsigned char *md5hash(void *buf, int len, unsigned char hash[16]) {
+unsigned char *md5hash(const void *buf, int len, unsigned char hash[16]) {
     struct MD5Context ctx;
   
     if (!hash) hash=m5hash;

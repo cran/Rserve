@@ -5,7 +5,7 @@
  *  Created: 2005/08/30
  *  License: GPL2
  *
- *  $Id: session.c 157 2006-04-21 18:52:34Z urbaneks $
+ *  $Id$
  */
 
 #include "config.h"

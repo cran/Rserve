@@ -1,6 +1,6 @@
 # Makefile for C++ Rserve clients - Win32 version
 #
-# $Id: Makefile.win 203 2007-05-10 18:12:06Z urbanek $
+# $Id$
 
 SRC = $(wildcard *.cc)
 OBJ = $(SRC:%.cc=%.o)

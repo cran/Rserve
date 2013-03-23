@@ -19,7 +19,7 @@
  *  everyone modifying this software to contribute back any improvements and
  *  bugfixes to the project for the benefit all other users. Thank you.
  * 
- *  $Id: Rconnection.cc 301 2011-01-07 16:32:45Z urbanek $
+ *  $Id$
  */
 
 /* external defines:

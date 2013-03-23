@@ -1,6 +1,6 @@
 /*
  *  Rsrv.h : constants and macros for Rserve client/server architecture
- *  Copyright (C) 2002-11 Simon Urbanek
+ *  Copyright (C) 2002-12 Simon Urbanek
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU Lesser General Public License as published
@@ -18,7 +18,7 @@
  *  Note: This header file is licensed under LGPL to allow other
  *        programs to use it under LGPL. Rserve itself is licensed under GPL.
  *
- *  $Id: Rsrv.h 335 2012-01-28 04:18:15Z urbanek $
+ *  $Id$
  */
 
 /* external defines:
@@ -32,7 +32,7 @@
 #include "config.h"
 #endif
 
-#define RSRV_VER 0x000608 /* Rserve v0.6-8 */
+#define RSRV_VER 0x010701 /* Rserve v1.7-1 */
 
 #define default_Rsrv_port 6311
 
@@ -116,6 +116,17 @@ struct phdr { /* always 16 bytes */
 #define RESP_ERR (CMD_RESP|0x0002) /* command failed, check stats code
 				      attached string may describe the error */
 
+#define CMD_OOB  0x20000  /* out-of-band data - i.e. unsolicited messages */
+#define OOB_SEND (CMD_OOB | 0x1000) /* OOB send - unsolicited SEXP sent from the R instance to the client. 12 LSB are reserved for application-specific code */
+#define OOB_MSG  (CMD_OOB | 0x2000) /* OOB message - unsolicited message sent from the R instance to the client requiring a response. 12 LSB are reserved for application-specific code */
+
+#define IS_OOB_SEND(X)  (((X) & 0x0ffff000) == OOB_SEND)
+#define IS_OOB_MSG(X)   (((X) & 0x0ffff000) == OOB_MSG)
+#define OOB_USR_CODE(X) ((X) & 0xfff)
+
+/* flag for create_server: Use QAP object-cap mode */
+#define SRV_QAP_OC 0x40
+
 /* stat codes; 0-0x3f are reserved for program specific codes - e.g. for R
    connection they correspond to the stat of Parse command.
    the following codes are returned by the Rserv itself
@@ -171,13 +182,34 @@ struct phdr { /* always 16 bytes */
 #define ERR_detach_failed    0x51 /* unable to detach seesion (cannot determine
 									 peer IP or problems creating a listening
 									 socket for resume) */
+/* since 1.7 */
+#define ERR_disabled         0x61 /* feature is disabled */
+#define ERR_unavailable      0x62 /* feature is not present in this build */
+#define ERR_cryptError       0x63 /* crypto-system error */
+#define ERR_securityClose    0x64 /* server-initiated close due to security
+									 violation (too many attempts, excessive
+									 timeout etc.) */
 
 /* availiable commands */
 
 #define CMD_login        0x001 /* "name\npwd" : - */
 #define CMD_voidEval     0x002 /* string : - */
-#define CMD_eval         0x003 /* string : encoded SEXP */
+#define CMD_eval         0x003 /* string | encoded SEXP : encoded SEXP */
 #define CMD_shutdown     0x004 /* [admin-pwd] : - */
+
+/* security/encryption - all since 1.7-0 */
+#define CMD_switch       0x005 /* string (protocol)  : - */
+#define CMD_keyReq       0x006 /* string (request) : bytestream (key) */ 
+#define CMD_secLogin     0x007 /* bytestream (encrypted auth) : - */
+
+#define CMD_OCcall       0x00f /* SEXP : SEXP  -- it is the only command
+								  supported in object-capability mode
+								  and it requires that the SEXP is a
+								  language construct with OC reference
+								  in the first position */
+#define CMD_OCinit  0x434f7352 /* SEXP -- 'RsOC' - command sent from
+								  the server in OC mode with the packet
+								  of initial capabilities. */
 
 /* file I/O routines. server may answe */
 #define CMD_openFile     0x010 /* fn : - */
@@ -241,6 +273,8 @@ struct phdr { /* always 16 bytes */
 #define DT_SEXP       10 /* encoded SEXP */
 #define DT_ARRAY      11 /* array of objects (i.e. first 4 bytes specify how many
 			    subsequent objects are part of the array; 0 is legitimate) */
+#define DT_CUSTOM     32 /* custom types not defined in the protocol but used
+							by applications */
 #define DT_LARGE      64 /* new in 0102: if this flag is set then the length of the object
 			    is coded as 56-bit integer enlarging the header by 4 bytes */
 
@@ -312,6 +346,21 @@ struct phdr { /* always 16 bytes */
 #define ALIGN_DOUBLES
 #endif
 
+/* this is the type used to calculate pointer distances */
+/* note: we may want to use size_t or something more compatible */
+typedef unsigned long rlen_t;
+
+#ifdef ULONG_MAX
+#define rlen_max ULONG_MAX
+#else
+#ifdef __LP64__
+#define rlen_max 0xffffffffffffffffL 
+#else
+#define rlen_max 0xffffffffL
+#endif /* __LP64__ */
+#endif /* ULONG_MAX */
+
+
 /* functions/macros to convert native endianess of int/double for transport
    currently ony PPC style and Intel style are supported */
 
@@ -353,6 +402,7 @@ extern void fixdcpy(void *t,void *s);
 #define dtop(X) (X)
 #define ptod(X) (X)
 #define fixdcpy(T,S) ((double*)(T))[0]=((double*)(S))[0];
+#define NATIVE_COPY 1
 #endif
 
 #ifndef HAVE_CONFIG_H
@@ -371,6 +421,11 @@ extern int isByteSexOk();
 
 #else
 #define isByteSexOk 1
+#endif
+
+/* STANDALONE_RSERVE takes precedence over RSERVE_PKG */
+#if defined STANDALONE_RSERVE && defined RSERVE_PKG
+#undef RSERVE_PKG
 #endif
 
 #endif
