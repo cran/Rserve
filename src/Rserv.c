@@ -1,6 +1,6 @@
 /*
  *  Rserv : R-server that allows to use embedded R via TCP/IP
- *  Copyright (C) 2002-12 Simon Urbanek
+ *  Copyright (C) 2002-13 Simon Urbanek
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -306,6 +306,7 @@ int can_control = 0;    /* control commands will be rejected unless this flag is
 int child_control = 0;  /* enable/disable the ability of children to send commands to the master process */
 int self_control = 0;   /* enable/disable the ability to use control commands from within the R process */
 static int tag_argv = 0;/* tag the ARGV with client/server IDs */
+static char *pidfile = 0;/* if set by configuration generate pid file */
 
 #ifdef DAEMON
 int daemonize = 1;
@@ -326,6 +327,8 @@ static char *auth_fn;       /* authentication function */
 static int umask_value = 0;
 #endif
 
+int global_srv_flags = 0;
+
 static char *http_user, *https_user, *ws_user;
 
 static char **allowed_ips = 0;
@@ -345,8 +348,27 @@ void stop_server_loop() {
 #include <grp.h>
 #include <pwd.h>
 
+static char tmpdir_buf[1024];
+
+#include <Rembedded.h>
+
+#ifdef unix
+char wdname[512];
+int cinp[2];
+#endif
+
 static void prepare_set_user(int uid, int gid) {
-	/* FIXME: deal with permissions on the working directory and R_TempDir ... */
+	/* create a new tmpdir() and make it owned by uid:gid */
+	/* we use uid.gid in the name to minimize cleanup issues - we assume that it's ok to
+	   share tempdirs between sessions of the same user */
+	snprintf(tmpdir_buf, sizeof(tmpdir_buf), "%s.%d.%d", R_TempDir, uid, gid);
+	mkdir(tmpdir_buf, 0700); /* it is ok to fail if it exists already */
+	/* gid can be 0 to denote no gid change -- but we will be using
+	   0700 anyway so the actual gid is not really relevant */
+	chown(tmpdir_buf, uid, gid);
+	R_TempDir = strdup(tmpdir_buf);
+	if (workdir) /* FIXME: gid=0 will be bad here ! */
+		chown(wdname, uid, gid);
 }
 
 static int set_user(const char *usr) {
@@ -786,6 +808,24 @@ static int performConfig(int when) {
 	return fail;
 }
 
+/* called once the server process is setup (e.g. after
+   daemon fork for forked servers) */
+static void RSsrv_init() {
+	if (pidfile) {
+		FILE *f = fopen(pidfile, "w");
+		if (f) {
+			fprintf(f, "%d\n", getpid());
+			fclose(f);
+		} else RSEprintf("WARNING: cannot write into pid file '%s'\n", pidfile);
+	}
+}
+
+static void RSsrv_done() {
+	if (pidfile) {
+		unlink(pidfile);
+		pidfile = 0;
+	}
+}
 
 /* attempts to set a particular configuration setting
    returns: 1 = setting accepted, 0 = unknown setting, -1 = setting known but failed */
@@ -808,6 +848,13 @@ static int setConfig(const char *c, const char *p) {
 	}
 	if (!strcmp(c, "tag.argv")) {
 		tag_argv = (*p == '1' || *p == 'y' || *p == 'e' || *p == 'T') ? 1 : 0;
+		return 1;
+	}
+	if (!strcmp(c, "keep.alive")) {
+		if (*p == '1' || *p == 'y' || *p == 'e' || *p == 'T')
+			global_srv_flags |= SRV_KEEPALIVE;
+		else
+			global_srv_flags &= ~ SRV_KEEPALIVE;
 		return 1;
 	}
 	if (!strcmp(c, "switch.qap.tls")) {
@@ -921,11 +968,7 @@ static int setConfig(const char *c, const char *p) {
 		return 1;
 	}
 	if (!strcmp(c, "pid.file") && *p) {
-		FILE *f = fopen(p, "w");
-		if (f) {
-			fprintf(f, "%d\n", getpid());
-			fclose(f);
-		} else RSEprintf("WARNING: cannot write into pid file '%s'\n", p);
+		pidfile = strdup(p);
 		return 1;
 	}
 	if (!strcmp(c, "rsa.key")) {
@@ -2185,11 +2228,6 @@ void Rserve_QAP1_connected(void *thp) {
     SEXP xp,exp;
     FILE *cf=0;
 
-#ifdef unix
-    char wdname[512];
-	int cinp[2];
-#endif
-
 #ifdef FORKED  
 
 	long rseed = random();
@@ -2386,6 +2424,7 @@ void Rserve_QAP1_connected(void *thp) {
 		SEXP eval_result = 0;
 		size_t plen = 0;
 		SEXP pp = R_NilValue; /* packet payload (as a raw vector) for special commands */
+		Rerror = 0;
 #ifdef RSERV_DEBUG
 		printf("\nheader read result: %d\n", rn);
 		if (rn > 0) printDump(&ph, rn);
@@ -3063,7 +3102,6 @@ void Rserve_QAP1_connected(void *thp) {
 			int is_large = (parT[0] & DT_LARGE) ? 1 : 0;
 			if (is_large) parT[0] ^= DT_LARGE;
 			process = 1;
-			Rerror = 0;
 			if (pars < 1 || (parT[0] != DT_STRING && parT[0] != DT_SEXP))
 				sendResp(a, SET_STAT(RESP_ERR, ERR_inv_par));
 			else if (parT[0] == DT_SEXP) {
@@ -3457,6 +3495,7 @@ void serverLoop() {
 					} else
 #endif
 						sa->s = CF("accept", accept(ss, (SA*)&(sa->sa), &al));
+					accepted_server(srv, sa->s);
 					sa->ucix = UCIX++;
 					sa->ss = ss;
 					sa->srv = srv;
@@ -3619,48 +3658,54 @@ SEXP run_Rserve(SEXP cfgFile, SEXP cfgPars) {
 		}
 	}
 	
+	RSsrv_init();
 	/* FIXME: should we really do this ? setuid, chroot etc. are not meant to work inside R ... */
 	performConfig(SU_NOW);
 
 	ss = create_server_stack();
 
 	if (enable_qap) {
-		server_t *srv = create_Rserve_QAP1(qap_oc ? SRV_QAP_OC : 0);
+		server_t *srv = create_Rserve_QAP1((qap_oc ? SRV_QAP_OC : 0) | global_srv_flags);
 		if (!srv) {
 			release_server_stack(ss);
+			RSsrv_done();
 			Rf_error("Unable to start Rserve server");
 		}
 		push_server(ss, srv);
 	}
 
 	if (tls_port > 0) {
-		server_t *srv = create_Rserve_QAP1(SRV_TLS | (qap_oc ? SRV_QAP_OC : 0));
+		server_t *srv = create_Rserve_QAP1(SRV_TLS | (qap_oc ? SRV_QAP_OC : 0) | global_srv_flags);
 		if (!srv) {
 			release_server_stack(ss);
+			RSsrv_done();
 			Rf_error("Unable to start TLS/Rserve server");
 		}
 		push_server(ss, srv);
 	}
 
 	if (http_port > 0) {
-		int flags =  (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | (ws_qap_oc ? SRV_QAP_OC : 0);
+		int flags =  (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) |
+			(ws_qap_oc ? SRV_QAP_OC : 0) | global_srv_flags;
 		server_t *srv = create_HTTP_server(http_port, flags |
 										   (ws_upgrade ? HTTP_WS_UPGRADE : 0) |
 										   (http_raw_body ? HTTP_RAW_BODY : 0));
 		if (!srv) {
 			release_server_stack(ss);
+			RSsrv_done();
 			Rf_error("Unable to start HTTP server on port %d", http_port);
 		}
 		push_server(ss, srv);
 	}
 
 	if (https_port > 0) {
-		int flags =  (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0);
+		int flags =  (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | global_srv_flags;
 		server_t *srv = create_HTTP_server(https_port, SRV_TLS | flags |
 										   (ws_upgrade ? HTTP_WS_UPGRADE : 0) |
 										   (http_raw_body ? HTTP_RAW_BODY : 0));
 		if (!srv) {
 			release_server_stack(ss);
+			RSsrv_done();
 			Rf_error("Unable to start HTTPS server on port %d", https_port);
 		}
 		push_server(ss, srv);
@@ -3670,20 +3715,23 @@ SEXP run_Rserve(SEXP cfgFile, SEXP cfgPars) {
 		server_t *srv;
 		if (ws_port < 1 && wss_port < 1 && !ws_upgrade) {
 			release_server_stack(ss);
+			RSsrv_done();
 			Rf_error("Invalid or missing websockets port");
 		}
 		if (ws_port > 0) {
-			srv = create_WS_server(ws_port, (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | (ws_qap_oc ? SRV_QAP_OC : 0));
+			srv = create_WS_server(ws_port, (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | (ws_qap_oc ? SRV_QAP_OC : 0) | global_srv_flags);
 			if (!srv) {
 				release_server_stack(ss);
+				RSsrv_done();
 				Rf_error("Unable to start WebSockets server on port %d", ws_port);
 			}
 			push_server(ss, srv);
 		}
 		if (wss_port > 0) {
-			srv = create_WS_server(wss_port, (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | (ws_qap_oc ? SRV_QAP_OC : 0) | WS_TLS);
+			srv = create_WS_server(wss_port, (enable_ws_qap ? WS_PROT_QAP : 0) | (enable_ws_text ? WS_PROT_TEXT : 0) | (ws_qap_oc ? SRV_QAP_OC : 0) | WS_TLS | global_srv_flags);
 			if (!srv) {
 				release_server_stack(ss);
+				RSsrv_done();
 				Rf_error("Unable to start TLS/WebSockets server on port %d", wss_port);
 			}
 			push_server(ss, srv);
@@ -3693,6 +3741,7 @@ SEXP run_Rserve(SEXP cfgFile, SEXP cfgPars) {
 	if (!server_stack_size(ss)) {
 		Rf_warning("No server protocol is enabled, nothing to do");
 		release_server_stack(ss);
+		RSsrv_done();
 		return ScalarLogical(FALSE);
 	}
 	
@@ -3706,6 +3755,8 @@ SEXP run_Rserve(SEXP cfgFile, SEXP cfgPars) {
 	restore_signal_handlers();
 
 	release_server_stack(ss);
+	
+	RSsrv_done();
 
 	return ScalarLogical(TRUE);
 }
