@@ -1,5 +1,5 @@
 Package: Rserve
-Version: 1.7-3
+Version: 1.7-3.1
 Title: Binary R server
 Author: Simon Urbanek <Simon.Urbanek@r-project.org>
 Maintainer: Simon Urbanek <Simon.Urbanek@r-project.org>
@@ -19,4 +19,5 @@ License: GPL-2 | file LICENSE
 URL: http://www.rforge.net/Rserve/
 NeedsCompilation: yes
 Repository: CRAN
-Date/Publication: 2013-08-21 23:35:21
+Date/Publication: 2019-04-15 16:53:44 UTC
+Packaged: 2019-03-14 18:24:52 UTC; ripley

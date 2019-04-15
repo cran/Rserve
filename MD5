@@ -1,9 +1,10 @@
-d92d3753235385f51152145248e5790d *DESCRIPTION
+6d36d25b2f5f1d68f21e34e6c9b207be *DESCRIPTION
 52b8686c329855db3de97bc9fe302a62 *INDEX
 51ab443d0a22e0e9e4f693c12f07f8e9 *LICENSE
 c66359bb3166f6d7884539df312aea9e *NAMESPACE
 de890dd1555a67a1b4c9b10b240e3364 *NEWS
 717819ef4178d789c6fcf33fbbd7d34e *R/conn.R
+7f625ea437de1b3a87e89147c748ae5a *aclocal.m4
 1285c2452b360dcb43dae2fae24c1dc8 *cleanup
 55ff86fb75adec42e8cb85e096da5661 *clients.txt
 2d6d65e154495e0623b04894c4d956a8 *clients/README.txt
@@ -81,8 +82,8 @@ d4ff8f3834f9ca9b742f05c4936a3baa *clients/java/Rserve/test/jt.java
 eb679aec02bcc436f027e46b27722ffa *clients/java/Rserve/test/test.java
 fd1948ffcc8aa12424c33d08869eeb72 *clients/java/package-info.java
 8533aa43245961e8d15d0602432d20f6 *clients/php/simple.php
-f3237157129ab454f28d738849ea374b *configure
-ecc3b126aa1e3753940d5b2f6f13d030 *configure.ac
+b9f6f52e01d37812a00972eae1c23994 *configure
+37f8c234778c8219f006367a7881c986 *configure.ac
 243e9a3eede74518a6bc030bfec66beb *configure.win
 ab9a9969d8e1be834972ec514fdb9c1b *inst/java/REngine.jar
 85a1dc8b89ddc2a603184b9d8b8fa35d *inst/java/Rserve.jar
