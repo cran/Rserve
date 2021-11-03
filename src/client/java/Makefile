@@ -9,7 +9,7 @@ all: $(TARGETS)
 JAVAC=javac
 JAVADOC=javadoc
 JDFLAGS=-author -version -breakiterator -link http://java.sun.com/j2se/1.4.2/docs/api/
-JFLAGS+=-source 1.4 -target 1.4
+JFLAGS+=-source 1.6 -target 1.6
 
 REngine.jar: $(RENG_SRC)
 	@rm -rf org
@@ -38,5 +38,14 @@ doc:	$(RENG_SRC) $(RSRV_SRC) $(JRI_SRC)
 	rm -rf $@
 	mkdir $@
 	$(JAVADOC) -d $@ $(JDFLAGS) $^
+
+mvn.pkg:
+	mvn -B clean package install && (cd Rserve && mvn -B clean package)
+
+mvn.sign:
+	mvn clean verify install -P release && (cd Rserve && mvn clean verify -P release )
+
+mvn.deploy:
+	mvn clean deploy install -P release && (cd Rserve && mvn clean deploy -P release )
 
 .PHONY: clean all test

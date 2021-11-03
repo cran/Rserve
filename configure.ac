@@ -1,7 +1,8 @@
 # Process this file with autoconf to produce a configure script.
-AC_INIT([Rserve],[1.7],[Simon.Urbanek@r-project.org])
+AC_INIT([Rserve],[1.8],[Simon.Urbanek@r-project.org])
 AC_CONFIG_SRCDIR([src/Rserv.c])
-AC_CONFIG_HEADER([src/config.h])
+AC_CONFIG_HEADERS([src/config.h])
+AC_CONFIG_AUX_DIR([tools])
 
 # find R home and set CC/CFLAGS
 : ${R_HOME=`R RHOME`}
@@ -18,9 +19,12 @@ AC_ARG_WITH([client],
 	AS_HELP_STRING(--with-client,[compile additional C/C++ Rserve client (default is @<:@no@:>@). The client can be always compiled manually regardless of this setting.]),
 	[with_client=$withval], [with_client=no])
 
+AC_ARG_WITH([proxy],
+	AS_HELP_STRING(--with-proxy,[compile WebSockets/QAP proxy (default is @<:@yes@:>@).]),
+	[with_proxy=$withval], [with_proxy=yes])
+
 AC_ARG_ENABLE([ipv6],
-[AC_HELP_STRING([--enable-ipv6],
-		[enable the use of IPv6 protocol. @<:@no@:>@])],
+[AS_HELP_STRING([--enable-ipv6],[enable the use of IPv6 protocol. @<:@no@:>@])],
 [want_ipv6="${enableval}"],
 [want_ipv6=no])
 
@@ -29,6 +33,14 @@ has_R_shlib=no
 if test -n "$RLD"; then
    has_R_shlib=yes
 fi
+
+AC_ARG_ENABLE([threads],
+[AS_HELP_STRING([--enable-threads],[enable the use of threads in code than may benefit from it.
+		Currently, it is only used in stdout/err forwarding, it does not
+		enable the threaded server.
+                @<:@auto@:>@])],
+[want_threads="${enableval}"],
+[want_threads=auto])
 
 AC_MSG_CHECKING([whether to compile the server])
 if test "${with_server}" = yes; then
@@ -57,8 +69,8 @@ fi
 
 AM_CONDITIONAL(WITH_SERVER, [test "x${with_server}" = xyes])
 AM_CONDITIONAL(WITH_CLIENT, [test "x${with_client}" = xyes])
+AM_CONDITIONAL(WITH_PROXY,  [test "x${with_proxy}" = xyes])
 
-AC_LANG(C)
 CC=`${R_HOME}/bin/R CMD config CC`;
 CXX=`${R_HOME}/bin/R CMD config CXX`;
 CPPFLAGS="${CPPFLAGS} ${PKG_CPPFLAGS}"
@@ -83,9 +95,8 @@ AC_PROG_CC
 # Checks for libraries.
 
 # Checks for header files.
-AC_HEADER_STDC
 AC_HEADER_SYS_WAIT
-AC_CHECK_HEADERS([string.h memory.h sys/time.h unistd.h])
+AC_CHECK_HEADERS([limits.h string.h memory.h sys/time.h unistd.h])
 AC_CHECK_HEADERS([sys/stat.h sys/types.h sys/socket.h sys/un.h netinet/in.h netinet/tcp.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
@@ -107,11 +118,21 @@ AC_MSG_ERROR([Cannot determine endianness neither from the compiler nor using a 
 Try adding -D_BIG_ENDIAN_ or -D_LITTLE_ENDIAN_ to PKG_CPPFLAGS.
 ])])
 ])
-AC_HEADER_TIME
+
 
 # Checks for library functions.
 AC_FUNC_FORK
-AC_TYPE_SIGNAL
+# NOTE: autoconf claims this must be void and thus is not needed
+AC_CACHE_CHECK([return type of signal handlers],[ac_cv_type_signal],[AC_COMPILE_IFELSE(
+[AC_LANG_PROGRAM([#include <sys/types.h>
+#include <signal.h>
+],
+		 [return *(signal (0, 0)) (0) == 1;])],
+		   [ac_cv_type_signal=int],
+		   [ac_cv_type_signal=void])])
+AC_DEFINE_UNQUOTED([RETSIGTYPE],[$ac_cv_type_signal],[Define as the return type of signal handlers
+		    (`int' or `void').])
+
 AC_CHECK_FUNCS([memset mkdir rmdir select socket srandomdev])
 
 # Check whether we can use crypt (and if we do if it's in the crypt library)
@@ -193,6 +214,35 @@ AC_CHECK_HEADER([openssl/rsa.h],
 # check SSL support
 AC_CHECK_HEADER([openssl/ssl.h],
 [AC_SEARCH_LIBS(SSL_CTX_load_verify_locations, [ssl openssl], [AC_DEFINE(HAVE_TLS, 1, [TLS/SSL support])])])
+
+# check threads
+AC_MSG_CHECKING([whether threads are desired])
+if test "$want_threads" != no; then
+   AC_MSG_RESULT([yes])
+   AC_MSG_CHECKING([for working threads support])
+   AX_PTHREAD([
+     LIBS="$PTHREAD_LIBS $LIBS"
+     ## we don't want to mess with CFLAGS so we (ab)use CPPFLAGS
+     CPPFLAGS="$CPPFLAGS $PTHREAD_CFLAGS" 
+     ## and we ignore PTHREAD_CC since we have to use R's settings
+     with_threads=yes
+     AC_MSG_RESULT([yes])
+   ], [
+     AC_MSG_RESULT([no])
+     if test "$want_threads" = yes; then
+       AC_MSG_ERROR([Threads were requested, but no working threads support was found])
+     fi 
+     with_threads=no
+   ])
+else
+   AC_MSG_RESULT([no])
+   with_threads=no
+fi
+AC_SUBST(PTHREAD_CFLAGS)
+
+if test x"$with_threads" = xyes; then
+   AC_DEFINE(WITH_THREADS, 1, [set if threads can be used])
+fi
 
 AC_CONFIG_FILES([src/Makevars])
 AC_CONFIG_FILES([src/client/cxx/Makefile])

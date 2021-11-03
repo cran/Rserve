@@ -33,10 +33,10 @@ static const unsigned char NaStringRepresentation[2] = { 255, 0 };
 
 rlen_t getStorageSize(SEXP x) {
     int t = TYPEOF(x);
-    rlen_t tl = LENGTH(x); /* although LENGTH can only be 32-bit use rlen_t to avoid downcasting */
+    rlen_t tl = XLENGTH(x); /* although LENGTH can only be 32-bit use rlen_t to avoid downcasting */
     rlen_t len = 4;
     
-#ifdef RSERV_DEBUG
+#if defined RSERV_DEBUG && ! (defined DEBUG_NO_STORAGE)
     printf("getStorageSize(%p,type=%d,len=%ld) ", (void*)x, t, tl);
 #endif
     if (t != CHARSXP && TYPEOF(ATTRIB(x)) == LISTSXP) {
@@ -115,7 +115,7 @@ rlen_t getStorageSize(SEXP x) {
     }
     if (len > 0xfffff0) /* large types must be stored in the new format */
 		len += 4L;
-#ifdef RSERV_DEBUG
+#if defined RSERV_DEBUG && ! (defined DEBUG_NO_STORAGE)
     printf("= %lu\n", len);
 #endif
     return len;
@@ -182,38 +182,42 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x, rlen_t storage_size) {
     }
     
     if (t==REALSXP) {
-		R_len_t i = 0;
 		*buf=itop(XT_ARRAY_DOUBLE|hasAttr);
 		buf++;
 		attrFixup;
 #ifdef NATIVE_COPY
-		memcpy(buf, REAL(x), sizeof(double) * LENGTH(x));
-		buf += LENGTH(x) * sizeof(double) / sizeof(*buf);
+		memcpy(buf, REAL(x), sizeof(double) * XLENGTH(x));
+		buf += XLENGTH(x) * sizeof(double) / sizeof(*buf);
 #else
-		while(i < LENGTH(x)) {
+		{
+		    R_len_t i = 0;
+		    while(i < XLENGTH(x)) {
 			fixdcpy(buf, REAL(x) + i);
 			buf += 2; /* sizeof(double)=2*sizeof(int) */
 			i++;
+		    }
 		}
 #endif
 		goto didit;
     }
 
     if (t==CPLXSXP) {
-		R_len_t i = 0;
 		*buf = itop(XT_ARRAY_CPLX|hasAttr);
 		buf++;
 		attrFixup;
 #ifdef NATIVE_COPY
-		memcpy(buf, COMPLEX(x), LENGTH(x) * sizeof(*COMPLEX(x)));
-		buf += LENGTH(x) * sizeof(*COMPLEX(x)) / sizeof(*buf);
+		memcpy(buf, COMPLEX(x), XLENGTH(x) * sizeof(*COMPLEX(x)));
+		buf += XLENGTH(x) * sizeof(*COMPLEX(x)) / sizeof(*buf);
 #else
-		while(i < LENGTH(x)) {
+		{
+		    R_len_t i = 0;
+		    while(i < XLENGTH(x)) {
 			fixdcpy(buf, &(COMPLEX(x)[i].r));
 			buf += 2; /* sizeof(double)=2*sizeof(int) */
 			fixdcpy(buf, &(COMPLEX(x)[i].i));
 			buf += 2; /* sizeof(double)=2*sizeof(int) */
 			i++;
+		    }
 		}
 #endif
 		goto didit;
@@ -291,7 +295,7 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x, rlen_t storage_size) {
     }
 	
     if (t==INTSXP) {
-		R_len_t i = 0, n = LENGTH(x);
+		R_len_t n = LENGTH(x);
 		int *iptr = INTEGER(x);
 		*buf = itop(XT_ARRAY_INT | hasAttr);
 		buf++;
@@ -300,10 +304,13 @@ unsigned int* storeSEXP(unsigned int* buf, SEXP x, rlen_t storage_size) {
 		memcpy(buf, iptr, n * sizeof(int));
 		buf += n;
 #else
-		while(i < n) {
+		{
+		    R_len_t i = 0;
+		    while(i < n) {
 			*buf = itop(iptr[i]);
 			buf++;
 			i++;
+		    }
 		}
 #endif
 		goto didit;

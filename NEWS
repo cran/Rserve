@@ -1,6 +1,321 @@
  NEWS/Changelog for Rserve
 ---------------------------
 
+NOTE: Rserve 1.8 series has many new features, but it has also removed
+      support for control commands. If you absolutely need them,
+      please use Rserve 1.7 series and notify me so I can assess
+      whether they may be resurrected for the 1.9 series. If you don't
+      know what it means, just ignore this note.
+
+
+1.8-8	2021-10-31
+    o	add basic ulog logging for QAP1 even outside of OCAP mode (#169)
+
+    o	TLS configuration options now check the success of the
+	operation and will issue a warning if it failed. Most
+	importantly `tls.key` must succeed in order for the
+	server to support TLS.
+
+    o	New option `tls.client` governs the treatment of client
+	certificates. There are following possible values:
+
+	none        - does not ask nor check the client certificate
+	request     - request certificate from the client, but
+		      do not check its validity
+	require	    - require client certificate, if not present
+		      or not valid, reject the connection
+	match:...   - client's common name  must match exactly one
+		      of the listed (comma-separated) names. No spaces
+		      are allowed around the commas.
+	prefix:...  - the client's common name must start with the
+		      specified prefix
+	suffix:...  - the client's common name must end with the
+		      specified suffix
+
+	The options `match`, `prefix` and `suffix` imply `require`.
+	Each of them can be specified only once. However, it is
+	possible to use up to one each in which case the requirement
+	is treated as logical "or", e.g.,
+
+	    tls.client match:foo.bar
+	    tls.client suffix:me.com
+
+	will allow both clients	`foo.bar` and `foo.me.com`.
+
+	NOTE: `none`/`request`/`require` are mutually exclusive. If
+	more than one is specified, the behavior is undefined
+	(currently the last one wins but that shold not be relied
+	upon). All comparisons are case-senstitive (sorry, no regex
+	support at this point, because we do not want to depend on
+	PCRE just yet).
+
+	If the `tls.client` option is not specified, then the default
+	behavior is one of `none` or `request`. In that case no attempt
+	is made to control the TLS behavior so it depends on the SSL
+	library's default whether it asks for the client certificate
+	or not, but in either case it is not checked.
+
+	NOTE: probably the best way to use the new feature is to use
+	certificates issued by your organization with
+	`tls.client require` and `tls.ca` set to the organization's CA
+	certificate which means you don't need to check client names
+	and yet no unauthorized client can connect.
+
+    o	-DULOG_STDERR now correctly produces ulog output on stderr
+	and ulog output is visible in the debug build
+
+    o	TLS shutdowns are performed explicitly and sockets closed
+	(only affects non-forking servers)
+
+    o	several possible leaks of arguments under error conditions
+	were fixed
+
+
+1.8-7	2020-12-17
+    o	proxy: fail with an error if no servers can bind (#152)
+
+    o	proxy: fail if SSL cannot be initialized
+
+    o	include err.h SSL header outside of debug mode
+
+
+1.8-6	2020-06-11
+    o	proxy: handle WebSockets control frames (PING/PONG/CLOSE)
+	proper.
+
+    o	proxy: fail with an error if key/certificate cannot be
+	loaded at start time. Both -k and -c are required to
+	enable TLS/SSL. Also the proxy will issues an error if -k
+	is used and SSL support has not been available at compile
+	time. (#127)
+
+    o	proxy: linking no longer hard-codes `-lssl` (it effectively
+	failed compilation when SSL was not available).
+
+    o	proxy: added -S <host>[:<port>] which allows automatic
+	registration and de-registation with a server manager
+	when the service is available (e.g., this can be used
+	to keep the compute node list up-to-date automatically
+	when load-balancing via the nginx reverse proxy).
+
+    o	support large vectors in QAP encoding/decoding
+
+    o	restore some Windows compatibility - at least to the point
+	where it compiles. It is still strongly discouraged to use
+	Windows given how limited the OS is and how it prevents
+	any sensible use (Windows only supports single-client,
+	single-thread, cooperative mode - so for toy uses only).
+
+    o	content-type header entry is lower-cased only up to a
+	semicolon since trailing options may be case-sensitive. (#149)
+
+
+1.8-5	2017-03-25
+    o	add support for callback in OCAP idle mode. If the function
+	.ocap.idle() exists in the global environment and the
+	configuration option
+
+	  use.idle.callback yes
+
+	is set then that function is called inside each OCAP iteration
+	after a timeout of 200ms (i.e., if R is idle in the OCAP loop
+	with no input from any side for at least 200ms).
+
+    o	control commands are now officially disabled since they never
+	worked reliably in the 1.8 series after the the rsio re-write.
+
+
+1.8-4	2015-12-23
+    o	bugfix: when using compute separation on some Linux systems the
+	death of the compute process may remain undetected. Rserve
+	now actively detects if the compute process has terminated and
+	will signal accordingly. The same goes of a compute process
+	whose parent has died.
+
+    o	bugfix: make sure headers are correctly terminated when using
+	forward proxy and R scripts.
+
+    o	bugfix: static files served by the proxy had duplicate (and
+	possibly conflicting) content-type headers.
+
+
+1.8-3	2015-07-20
+    o	add support for the notion of a context object which can be
+	retrieved/set using Rserve.context() function. If
+
+	   io.use.context yes
+
+	configuration option is set then the context is passed
+	as-is in OOB console callbacks as the first argument after
+	the callback name.
+
+	Rserve.eval() can also safely set a context object for the
+	duration of the evaluation which guarantees that any
+	previous context is restored upon exit - both on error or
+	success.
+
+    o	added WebSockets/QAP proxy and HTTP server. It is a
+	stand-alone program that can be used to separate the R process
+	from the network to enhance security. typical setup is for the
+	proxy to listen on an outside port and connect to Rserve on a
+	local (unix) socket which is restricted to the user running
+	the proxy.
+
+	It is enabled by default and installed into the package's libs
+	directory along with the Rserve binaries. It is, however, not
+	installed into $R_HOME/bin. The building of the proxy can be
+	disabled via --disable-proxy configure directive.
+
+
+1.8-2	2015-05-20
+    o	fix bug in the WebSockets protocol implementation where frames
+	over 64kB from the client may be parsed incorrectly.
+
+
+1.8-1	2015-04-08
+    o	add ulog() R function to allow custom logging from R code
+
+    o	add "fork here" directive which allows to spawn multiple
+	pre-forked instances of Rserve which all share the same
+	memory. The rest of the configuration file is then ignored in
+	the forked instance while the parent server instance continues
+	to read on. This can be useful on machines with many cores and
+	very short requests where the serial fork() time for each
+	connection is in the order of the computing time. Note that by
+	design this only works in configuration files and cannot be
+	used on the command line.
+
+    o	daemonize only *after* all servers have been bound such the
+	exit code can be used to detect if Rserve has actually
+	started successfully
+
+    o   add Rserve.eval() function to perfrom REPL-like evaluation
+
+    o	add a new config option to close all stdio file descriptors
+	(stdin, stdout, stderr) on daemonization:
+
+	   close.all.stdio enable
+
+	For compatibiliy the default is false.
+
+    o	Rserve will honor --silent command line option (destined for R)
+	to not print the "Rserve started .." line.
+
+    o	add support for console input OOB message, enabled via
+
+	    console.input enable
+
+	When enabled R will request input to ReadConsole by sending a
+	OOB message to the client, expecting back a string to be used
+	as input to the console. It is only honored if console.oob is
+	also enabled.
+
+
+1.8-0	2014-09-03
+    o	new logging mechanism has been added to Rserve. It can
+	be enabled using the
+
+	   ulog <path>
+
+	directive and uses syslogd-compatible unix socket or UDP
+	datagram transfer to log events. Currently, only OCAP
+	events are logged.
+
+    o	OCAPs can now be tagged with a name	
+
+    o	avoid duplicate symbols by not loading the Rserve dylib
+	inside an embedded Rserve instance. This avoid issues
+	of calling the wrong symbols, but it implies that
+	run.Rserve() can no longer be used from within a
+	child proces of an embedded Rserve instance (which
+	you really don't want to do anyway).
+
+    o	symbols are now registered *before* processing source/eval
+	directives from the configuration file
+
+    o	added new option to remove the working directory on
+	session close recursively - activated by
+
+	   workdir.clean enable
+
+	If not set, the default is to only remove it if it is empty
+	(on the assumption there are files that will be served beyond
+	the life of the session).
+
+    o	added workdir.parent.mode option which specifies the
+	permissions on the parent directory of session working
+	directories. The default is 0755. Unlike workdir.mode this one
+	does not respect the umask (beause it may be shared and thus
+	may need to include permissions that are otherwise not
+	granted).
+
+    o	the data offset field in the QAP header is deprecated and can
+	be used for message ID if enabled using
+
+	   msg.id enable
+
+	In that mode all responses will copy the message ID from the
+	request and new requests (such as OOB send/msg) will use
+	randomly generated message IDs. This allows clients to more
+	easily track responses for nested commands. Note that this is
+	backwards-compatible if old clients use the convention of 0
+	data offset which was the norm (as long as OOB is not used).
+
+    o	nested evaluation is supported in OCAP mode. This means that
+	OCcall followed by another OCcall can be processed before the
+	first call terminates if the R side issues an OOB message in
+	which case the second OCcall will be nested within the first
+	call.
+
+    o	allow expansion of environment variables in the configuration
+	file, i.e., ${VAR} will be replaced with the contents of the
+	VAR environemnt variable. This only applies to the right-hand
+	side of configuration directives.
+
+    o	added command line argument --RS-set which allows any
+	configuration directive that is accepted in the configuration
+	file to be specified on the command line as
+	--RS-set directive=value
+ 
+    o	fix a typo in the "daemon" configuration option which was
+	looking for "deamon" instead.
+
+    o	added support for console callbacks. They can be enabled using
+
+    	   console.oob enable
+
+	directive and they result in OOB messages being sent on
+	console I/O operations.
+
+    o	add a configuration option "shutdown disable" that will
+	disable the shutdown command. This makes is a bit harder
+	for unprivileged users to shut down the Rserve instance.
+	It does not disable the ctrlShutdown command, so users that
+	have control command access can still issue a shutdown.
+	Note that this option will eventually become the default
+	so consider specifically using "shutdown enable" where
+	CMD_shutdown is still needed.
+	
+	Note that the shutdown command is not functional in cases
+	where user switching is performed anyway, so is it only used
+	for backward compatibility. Only ctrlShutdown is guaranteed
+	to work.
+
+    o	add a configuration option "oob.idle.interval" which will
+	trigger automated OOB send of "idle" command after a
+	specified interval. Currently it only works with
+	WebSockets.
+
+    o	add a configuration option "forward.stdio enable" which
+	will enable capturing of stdout/err and forward it to
+	the peer via OOB send messages. Note that this requires
+	thread support and uses additional file descriptors.
+	It in currently only available in OCAP WebSockets.
+
+    o	bugfix: pairlists were incorrecty protected when parsing
+	SEXPs (qap_decode) in messages from client to server (#16).
+
+
 1.7-3	2013-08-21
     o	the handling of server configuration modes has been
 	inconsistent for some combinations (mostly affected were

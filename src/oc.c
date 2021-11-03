@@ -39,13 +39,21 @@ static const char b64map[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN
 /* currently we use 21 bytes = 168 bits --> 28 bytes encoded */
 #define MAX_OC_TOKEN_LEN 31
 
+/* this is used to create multi-tier OCAPs if needed (0=no prefix, default) */
+char Rserve_oc_prefix;
+
 static void oc_new(char *dst) {
     int have_hash = 0, i;
     unsigned char hash[21];
 
 #ifdef HAVE_TLS
-    if (RAND_bytes(hash, 21) || RAND_pseudo_bytes(hash, 21))
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+    if (RAND_bytes(hash, 21) == 1 || RAND_pseudo_bytes(hash, 21))
 	have_hash = 1;
+#else /* OpenSSL 1.1+ doesn't support pseudo-bytes fall-back, so don't try - have to use random() instead ... */
+    if (RAND_bytes(hash, 21) == 1)
+	have_hash = 1;
+#endif
 #endif
 
     if (!have_hash) { /* should only be used if TLS is not available or it fails */
@@ -69,10 +77,12 @@ static void oc_new(char *dst) {
 	for (i = 0; i < sizeof(rbuf); i++) rbuf[i] = random();
 #endif
 	/* we use random -> SHA1 .. is it an overkill? */
-	sha1hash(rbuf, sizeof(rbuf) - 1, hash);
+	sha1hash((const char*)rbuf, sizeof(rbuf) - 1, hash);
 	/* the last byte is the hold-out byte -- just because SHA gives only 160 bits */
 	hash[20] = rbuf[sizeof(rbuf) - 1];
     }
+    if (Rserve_oc_prefix)
+      *(dst++) = Rserve_oc_prefix;
     for (i = 0; i < 21; i += 3) {
 	*(dst++) = b64map[hash[i] & 63];
 	*(dst++) = b64map[((hash[i] >> 6) | (hash[i + 1] << 2)) & 63];
@@ -82,7 +92,8 @@ static void oc_new(char *dst) {
     *dst = 0;
 }
 
-char *oc_register(SEXP what, char *dst, int len) {
+char *oc_register(SEXP what, char *dst, int len, const char *name) {
+    SEXP x;
     if (len <= MAX_OC_TOKEN_LEN) return NULL;
     if (!oc_env) {
 	SEXP env = eval(PROTECT(lang3(install("new.env"), ScalarLogical(TRUE), R_EmptyEnv)), R_GlobalEnv);
@@ -91,23 +102,34 @@ char *oc_register(SEXP what, char *dst, int len) {
 	oc_env = env;
 	R_PreserveObject(oc_env);
     }
+    x = PROTECT(CONS(what, R_NilValue));
+    if (name) SET_TAG(x, install(name));
     oc_new(dst);
-    Rf_defineVar(install(dst), what, oc_env);
+    Rf_defineVar(install(dst), x, oc_env);
+    UNPROTECT(1);
     return dst;
 }
 
 /* --- R-side API --- */
 
-/* Note that we don't expose oc_resolve, because we don't want to facilitate
-   unwanted discovery (although code that can poke around like that has
-   already broken through some barriers) */
-SEXP Rserve_oc_register(SEXP what) {
+/* NOTE: if you change the signature, you *have* to change the registration
+   and declaration in standalone.c !! */
+SEXP Rserve_oc_register(SEXP what, SEXP sName) {
+    const char *name = 0;
     char token[MAX_OC_TOKEN_LEN + 1];
     SEXP res;
-    if (!oc_register(what, token, sizeof(token)))
+    if (TYPEOF(sName) == STRSXP && LENGTH(sName) > 0)
+	name = CHAR(STRING_ELT(sName, 0));
+    if (!oc_register(what, token, sizeof(token), name))
 	Rf_error("Cannot create OC reference registry");
     res = PROTECT(mkString(token));
     setAttrib(res, R_ClassSymbol, mkString("OCref"));
     UNPROTECT(1);
     return res;
+}
+
+SEXP Rserve_oc_resolve(SEXP what) {
+    if (!inherits(what, "OCref") || TYPEOF(what) != STRSXP || LENGTH(what) != 1)
+	Rf_error("invalid OCref");
+    return CAR(oc_resolve(CHAR(STRING_ELT(what, 0))));
 }

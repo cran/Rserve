@@ -36,8 +36,10 @@ Rserve <- function(debug=FALSE, port, args=NULL, quote=(length(args) > 1), wait,
   invisible(system(cmd, wait=wait, ...))
 }
 
-run.Rserve <- function(..., config.file="/etc/Rserve.conf")
+run.Rserve <- function(..., config.file="/etc/Rserve.conf") {
+  if (is.null(run_Rserve)) stop("Runnig inside an embedded Rserve instance - starting Rserve recursively is not supported")
   .Call(run_Rserve, as.character(config.file), sapply(list(...), as.character))
+}
 
 self.ctrlEval <- function(expr) {
   if (!is.loaded("Rserve_ctrlEval")) stop("This command can only be run inside Rserve with r-control enabled")
@@ -65,3 +67,17 @@ self.oobMessage <- function(what, code = 0L) {
   call <- getNativeSymbolInfo("Rserve_oobMsg")
   invisible(.Call(call, what, code))
 }
+
+ulog <- function(...) invisible(.Call(Rserve_ulog, paste(..., collapse="\n", sep="")))
+
+ocap <- function(fun, name=deparse(substitute(fun)))
+  .Call(Rserve_oc_register, fun, name)
+
+Rserve.eval <- function(what, where=.GlobalEnv, last.value=FALSE, exp.value=FALSE, context=NULL)
+    .Call(Rserve_eval, what, where, last.value, exp.value, context)
+
+Rserve.context <- function(what)
+    if (missing(what)) .Call(Rserve_get_context) else .Call(Rserve_set_context, what)
+
+resolve.ocap <- function(ocap)
+  .Call(Rserve_oc_resolve, ocap)

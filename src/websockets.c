@@ -5,17 +5,28 @@
 #include "tls.h"
 
 #include "rsdebug.h"
-#include "rserr.h"
 
 #include <sisocks.h>
 #include <string.h>
 #include <stdio.h>
 #include <signal.h>
 
+#include <Rinternals.h>
+
+#ifdef WIN32
+/* FIXME: this is a terribe, terrible hack around Win32 idiocy.
+   we should use stdint type or some such ... */
+#define long long long
+static int getpid() { /* for compatibility */
+	return (int) GetProcessId(GetCurrentProcess());
+}
+#endif
+
 struct args {
 	server_t *srv; /* server that instantiated this connection */
     SOCKET s;
 	SOCKET ss;
+	int msg_id;
 	void *res1; /* used by TLS */
 	struct args *tls_arg; /* if set it is used to wire send/recv calls */
 	/* the following entries are not populated by Rserve but can be used by server implemetations */
@@ -25,14 +36,18 @@ struct args {
 };
 
 static int  WS_recv_data(args_t *arg, void *buf, rlen_t read_len);
-static void WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf);
+static int  WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf);
 static int  WS_send_data(args_t *arg, const void *buf, rlen_t len);
 
+/* those will eventually be in the API but for now ... */
+int cio_send(int s, const void *buffer, int length, int flags);
+int cio_recv(int s, void *buffer, int length, int flags);
+
 static int WS_wire_send(args_t *arg, const void *buf, rlen_t len) {
-	return (arg->tls_arg) ? arg->tls_arg->srv->send(arg->tls_arg, buf, len) : send(arg->s, buf, len, 0);
+	return (arg->tls_arg) ? arg->tls_arg->srv->send(arg->tls_arg, buf, len) : cio_send(arg->s, buf, len, 0);
 }
 static int WS_wire_recv(args_t *arg, void *buf, rlen_t len) {
-	return (arg->tls_arg) ? arg->tls_arg->srv->recv(arg->tls_arg, buf, len) : recv(arg->s, buf, len, 0);
+	return (arg->tls_arg) ? arg->tls_arg->srv->recv(arg->tls_arg, buf, len) : cio_recv(arg->s, buf, len, 0);
 }
 static void WS_wire_close(args_t *arg) {
 	if (arg->tls_arg) {
@@ -103,12 +118,12 @@ void base64encode(const unsigned char *src, int len, char *dst);
 void Rserve_QAP1_connected(args_t *arg);
 void Rserve_text_connected(args_t *arg);
 
+int check_tls_client(int verify, const char *cn);
+
 #define FRAME_BUFFER_SIZE 65536
 
 static void WS_connected(void *parg) {
 	args_t *arg = (args_t*) parg;
-	/* server_t *srv = arg->srv; */
-	SOCKET s = arg->s;
 	int n, bp = 0, empty_lines = 0, request_line = 1;
 
 	struct header_info h;
@@ -118,6 +133,8 @@ static void WS_connected(void *parg) {
 	/* we have to perform a handshake before giving over to QAP 
 	   but we have to fork() first as to not block the server on handshake */
 	if (Rserve_prepare_child(arg) != 0) { /* parent or error */
+		if (arg->s != -1)
+			closesocket(arg->s);
 		free(arg);
 		return;
 	}
@@ -128,10 +145,20 @@ static void WS_connected(void *parg) {
 	   no bad side-effects.
 	*/
 	if (arg->srv->flags & WS_TLS) {
+		char cn[256];
 		args_t *tls_arg = calloc(1, sizeof(args_t));
 		tls_arg->s = arg->s;
 		tls_arg->srv = calloc(1, sizeof(server_t));
 		add_tls(tls_arg, shared_tls(0), 1);
+		if (check_tls_client(verify_peer_tls(tls_arg, cn, 256), cn)) {
+			close_tls(tls_arg);
+			free(tls_arg->srv);
+			free(tls_arg);
+			if (arg->s != -1)
+				closesocket(arg->s);
+			free(arg);
+			return;
+		}
 		arg->tls_arg = tls_arg;
 	} else arg->tls_arg = 0;
 
@@ -141,7 +168,7 @@ static void WS_connected(void *parg) {
 		strcpy(lbuf, "HTTP/1.1 500 Out of memory\r\n\r\n");
 		WS_wire_send(arg, lbuf, strlen(lbuf));
 		WS_wire_close(arg);
-		arg->s = -1;
+		free(arg);
 		return;
 	}
 	buf[LINE_BUF_SIZE - 1] = 0;
@@ -225,6 +252,7 @@ static void WS_connected(void *parg) {
 				arg->s = -1;
 				free_header(&h);
 				free(buf);
+				free(arg);
 				return;
 			}
 			/* otherwise it's fine, we will load more */
@@ -246,6 +274,7 @@ static void WS_connected(void *parg) {
 		arg->s = -1;
 		free(buf);
 		free_header(&h);
+		free(arg);
 		return;
 	}
 #ifdef RSERV_DEBUG
@@ -269,6 +298,7 @@ static void WS_connected(void *parg) {
 				arg->s = -1;
 				free(buf);
 				free_header(&h);
+				free(arg);
 				return;
 			}
 		}
@@ -279,6 +309,7 @@ static void WS_connected(void *parg) {
 			arg->s = -1;
 			free(buf);
 			free_header(&h);
+			free(arg);
 			return;
 		}
 		v[0] = count_digits(h.key1) / count_spaces(h.key1);
@@ -406,7 +437,7 @@ void WS13_upgrade(args_t *arg, const char *key, const char *protocol, const char
 	Rserve_QAP1_connected(arg);
 }
 
-static void WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf) {
+static int WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf) {
 	unsigned char *sbuf = (unsigned char*) arg->sbuf;
 	if (arg->ver == 0) {
 		/* FIXME: we can't really tunnel QAP1 without some encoding ... */
@@ -414,12 +445,14 @@ static void WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf) {
 		struct phdr ph;
 		int pl = 0;
 		long flen = len + sizeof(ph);
-		memset(&ph, 0, sizeof(ph));
 		ph.cmd = itop(rsp | ((rsp & CMD_OOB) ? 0 : CMD_RESP));
 		ph.len = itop(len);
 #ifdef __LP64__
 		ph.res = itop(len >> 32);
+#else
+		ph.res = 0;
 #endif
+		ph.msg_id = arg->msg_id;
 
 #ifdef RSERV_DEBUG
 		if (io_log) {
@@ -462,7 +495,9 @@ static void WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf) {
 #ifdef RSERV_DEBUG
 			if (pl) {
 				fprintf(stderr, "WS_send_resp: sending 4+ frame (ver %02d), n = %d / %d (of total %ld)\n", arg->ver, n, send_here, flen);
+#ifdef WS_DEBUG
 				{ int i, m = send_here; if (m > 100) m = 100; for (i = 0; i < m; i++) fprintf(stderr, " %02x", (int) sbuf[i]); fprintf(stderr,"\n"); }
+#endif
 			} else
 				fprintf(stderr, "WS_send_resp: continuation (%d bytes)\n", n);
 #endif
@@ -470,16 +505,18 @@ static void WS_send_resp(args_t *arg, int rsp, rlen_t len, const void *buf) {
 #ifdef RSERV_DEBUG
 				fprintf(stderr, "WS_send_resp: write failed (%d expected, got %d)\n", send_here, n);
 #endif
-				return;
+				return -1;
 			}
 			buf = ((char*)buf) + send_here - pl;
 			len -= send_here - pl;
 			pl = 0;
 		}
 	}
+	return 0;
 }
 
 /* we use send_data only to send the ID string so we don't bother supporting frames bigger than the buffer */
+/* FIXME: not true anymore - it is used for pass-through, so we did implement binary fragmentation */
 static int  WS_send_data(args_t *arg, const void *buf, rlen_t len) {
 	unsigned char *sbuf = (unsigned char*) arg->sbuf;
 	if (arg->ver == 0) {
@@ -502,31 +539,45 @@ static int  WS_send_data(args_t *arg, const void *buf, rlen_t len) {
 			return -1;
 		}
 	} else {
-		if (len < arg->sl - 8 && len < 65536) {
-			int n, pl = 0;
-			sbuf[pl++] =  ((arg->flags & F_OUT_BIN) ? 1 : 0) + ((arg->ver < 4) ? 0x04 : 0x81); /* text, 4+ has inverted FIN bit */
-			if (len < 126) /* short length */
-				sbuf[pl++] = len;
-			else if (len < 65536) { /* 16-bit */
-				sbuf[pl++] = 126;
-				sbuf[pl++] = len >> 8;
-				sbuf[pl++] = len & 255;
-			}
-			/* no masking or other stuff */
-			memcpy(sbuf + pl, buf, len);
-			n = WS_wire_send(arg, sbuf, len + pl);
+		rlen_t total = len;
+		int pl = 0;
+		sbuf[pl++] =  ((arg->flags & F_OUT_BIN) ? 1 : 0) + ((arg->ver < 4) ? 0x04 : 0x81); /* text, 4+ has inverted FIN bit */
+		if (len < 126) /* short length */
+			sbuf[pl++] = len;
+		else if (len < 65536) { /* 16-bit */
+			sbuf[pl++] = 126;
+			sbuf[pl++] = len >> 8;
+			sbuf[pl++] = len & 255;
+		} else { /* 64-bit */
+			sbuf[pl++] = 127;
+			{ int i = 8; long l = len; while (i--) { sbuf[pl + i] = l & 255; l >>= 8; } }
+			pl += 8;
+		}
+        while (len + pl) {
+            int n, send_here = (len + pl > arg->sl) ? arg->sl : (len + pl);
+            if (send_here > pl)
+                memcpy(sbuf + pl, buf, send_here - pl);
+            n = WS_wire_send(arg, sbuf, send_here);
 #ifdef RSERV_DEBUG
-			fprintf(stderr, "WS_send_data: sending 4+ frame (ver %02d), n = %d / %d\n", arg->ver, n, (int) len + pl);
+            if (pl) {
+                fprintf(stderr, "WS_send_data: sending 4+ frame (ver %02d), n = %d / %d (of total %ld)\n", arg->ver, n, send_here, len);
+#ifdef WS_DEBUG
+                { int i, m = send_here; if (m > 100) m = 100; for (i = 0; i < m; i++) fprintf(stderr, " %02x", (int) sbuf[i]); fprintf(stderr,"\n"); }
 #endif
-			if (n == len + pl) return len;
-			if (n < len + pl && n >= len) return len - 1;
-			return n;
-		} else {
+            } else
+                fprintf(stderr, "WS_send_data: continuation (%d bytes)\n", n);
+#endif
+            if (n != send_here) {
 #ifdef RSERV_DEBUG
-			fprintf(stderr, "ERROR in WS_send_data: data too large\n");
+                fprintf(stderr, "WS_send_data: write failed (%d expected, got %d)\n", send_here, n);
 #endif
-			return -1;
-		}		
+                return -1;
+            }
+            buf = ((char*)buf) + send_here - pl;
+            len -= send_here - pl;
+            pl = 0;
+        }
+		return total;
 	}
 	return 0;
 }
@@ -542,7 +593,9 @@ static int  WS_recv_data(args_t *arg, void *buf, rlen_t read_len) {
 			int n = WS_wire_recv(arg, arg->buf + arg->bp, arg->bl - arg->bp);
 #ifdef RSERV_DEBUG
 			fprintf(stderr, "WS_recv_data: needs ver 00 frame, reading %d bytes in addition to %d\n", n, arg->bp);
+#ifdef WS_DEBUG
 			{ int i; fprintf(stderr, "Buffer: "); for (i = 0; i < n; i++) fprintf(stderr, " %02x", (int) (unsigned char) arg->buf[i]); fprintf(stderr,"\n"); }
+#endif
 #endif
 			if (n < 1) return n;
 			arg->bp += n;
@@ -608,12 +661,17 @@ static int  WS_recv_data(args_t *arg, void *buf, rlen_t read_len) {
 	}
 	/* make sure we have at least one byte in the buffer */
 	if (arg->bp == 0) {
-		int n = WS_wire_recv(arg, arg->buf, arg->bl);
+		/* don't read past the current frame in case we're in a frame ... */
+		/* FIXME: it shouldn't matter but it appears that we don't handle that case correctly */
+		int max_sz = ((arg->flags & F_INFRAME) && arg->l1) ? arg->l1 : arg->bl;
+		int n = WS_wire_recv(arg, arg->buf, max_sz);
 		if (n < 1) return n;
 		arg->bp = n;
 #ifdef RSERV_DEBUG
 		fprintf(stderr, "INFO: WS_recv_data: read %d bytes:\n", n);
+#ifdef WS_DEBUG
 		{ int i; for (i = 0; i < n; i++) fprintf(stderr, " %02x", (int) (unsigned char) arg->buf[i]); fprintf(stderr,"\n"); }
+#endif
 #endif
 	}
 	if (arg->flags & F_INFRAME) { /* in frame with new content */
@@ -631,7 +689,10 @@ static int  WS_recv_data(args_t *arg, void *buf, rlen_t read_len) {
 		return read_len;
 	} else { /* not in frame - interpret a new frame */
 		unsigned char *fr = (unsigned char*) arg->buf;
-		int more = (arg->ver < 4) ? ((fr[0] & 0x80) == 0x80) : ((fr[0] & 0x80) == 0), mask = 0;
+#ifdef RSERV_DEBUG /* FIXME: we don't use more -- why? */
+		int more = (arg->ver < 4) ? ((fr[0] & 0x80) == 0x80) : ((fr[0] & 0x80) == 0);
+#endif
+		int mask = 0;
 		int need = 0, ct = fr[0] & 127, at_least, payload;
 		long len = 0;
 		/* set the F_IN_BIN flag according to the frame type */
@@ -685,12 +746,16 @@ static int  WS_recv_data(args_t *arg, void *buf, rlen_t read_len) {
 		/* FIXME: more recent protocols require MASK at all times */
 		if (mask) {
 #ifdef RSERV_DEBUG
+#ifdef WS_DEBUG
 			{ int i; for (i = 0; i < payload; i++) fprintf(stderr, " %02x", (int) (unsigned char) arg->buf[need + i]); fprintf(stderr,"\n"); }
+#endif
 #endif
 			SET_F_MASK(arg->flags, do_mask(arg->buf + need, payload, 0, arg->buf + need - 4));
 			memcpy(&arg->l2, arg->buf + need - 4, 4);
 #ifdef RSERV_DEBUG
+#ifdef WS_DEBUG
 			{ int i; for (i = 0; i < payload; i++) fprintf(stderr, " %02x", (int) (unsigned char) arg->buf[need + i]); fprintf(stderr,"\n"); }
+#endif
 #endif
 		} else arg->flags &= ~ F_MASK;
 		
@@ -737,8 +802,6 @@ server_t *create_WS_server(int port, int flags) {
 	}
 	return 0;
 }
-
-#include <Rinternals.h>
 
 void serverLoop(void);
 

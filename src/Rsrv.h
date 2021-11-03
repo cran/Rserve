@@ -1,6 +1,6 @@
 /*
  *  Rsrv.h : constants and macros for Rserve client/server architecture
- *  Copyright (C) 2002-13 Simon Urbanek
+ *  Copyright (C) 2002-15 Simon Urbanek
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU Lesser General Public License as published
@@ -32,7 +32,7 @@
 #include "config.h"
 #endif
 
-#define RSRV_VER 0x010703 /* Rserve v1.7-3 */
+#define RSRV_VER 0x010808 /* Rserve v1.8-8 */
 
 #define default_Rsrv_port 6311
 
@@ -77,10 +77,10 @@
 
  */
 
-struct phdr { /* always 16 bytes */
-	int cmd; /* command */
-	int len; /* length of the packet minus header (ergo -16) */
-	int dof; /* data offset behind header (ergo usually 0) */
+struct phdr {   /* always 16 bytes */
+	int cmd;    /* command */
+	int len;    /* length of the packet minus header (ergo -16) */
+	int msg_id; /* message id (since 1.8) [WAS:data offset behind header (ergo usually 0)] */
 	int res; /* high 32-bit of the packet length (since 0103
 				and supported on 64-bit platforms only)
 				aka "lenhi", but the name was not changed to

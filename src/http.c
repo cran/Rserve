@@ -56,6 +56,7 @@ struct args {
 	server_t *srv; /* server that instantiated this connection */
     SOCKET s;
 	SOCKET ss;
+	int msg_id;
 	void *res1, *res2;
 	/* the following entries are not populated by Rserve but can be used by server implemetations */
 	char *buf, *sbuf;
@@ -702,6 +703,7 @@ static void http_input_iteration(args_t *c) {
 								}
 							}
 						}
+						/* lower-case all header names */
 						while (*k && *k != ':') {
 							if (*k >= 'A' && *k <= 'Z')
 								*k |= 0x20;
@@ -719,7 +721,11 @@ static void http_input_iteration(args_t *c) {
 							}
 							if (!strcmp(bol, "content-type")) {
 								char *l = k;
-								while (*l) { if (*l >= 'A' && *l <= 'Z') *l |= 0x20; l++; }
+								/* change the content type to lower case,
+								   however, stop at ; since training content
+								   may be case-sensitive such as multipart-boundary
+								   (see #149) */
+								while (*l && *l != ';') { if (*l >= 'A' && *l <= 'Z') *l |= 0x20; l++; }
 								c->attr |= CONTENT_TYPE;
 								if (c->content_type) free(c->content_type);
 								c->content_type = strdup(k);
@@ -855,6 +861,9 @@ static void http_input_iteration(args_t *c) {
     }
 }
 
+/* from Rserve.c */
+int check_tls_client(int verify, const char *cn);
+
 static void HTTP_connected(void *parg) {
 	args_t *arg = (args_t*) parg;
 
@@ -869,8 +878,16 @@ static void HTTP_connected(void *parg) {
 		return;
 	}
 
-	if ((arg->srv->flags & SRV_TLS) && shared_tls(0))
+	if ((arg->srv->flags & SRV_TLS) && shared_tls(0)) {
+		char cn[256];
 		add_tls(arg, shared_tls(0), 1);
+		if (check_tls_client(verify_peer_tls(arg, cn, 256), cn)) {
+			close_tls(arg);
+			closesocket(arg->s);
+			free_args(arg);
+			return;
+		}
+	}
 
 	while (arg->s != -1)
 		http_input_iteration(arg);

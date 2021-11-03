@@ -10,7 +10,12 @@ extern int Rf_initEmbeddedR(int, char**);
 #include <R_ext/Rdynload.h>
 
 /* R API from oc.c */
-SEXP Rserve_oc_register(SEXP what);
+SEXP Rserve_oc_register(SEXP what, SEXP sName);
+SEXP Rserve_oc_resolve(SEXP what);
+
+/* from utils.c */
+SEXP Rserve_eval(SEXP what, SEXP rho);
+SEXP Rserve_set_context(SEXP what);
 
 static int ex(int res) {
 	RSsrv_done();
@@ -23,6 +28,7 @@ int main(int argc, char **argv)
     int stat, i, http_flags;
 	char **top_argv;
 	int    top_argc;
+	int    rs_silent = 0;
 
 	main_argv = argv;
 	main_argc = argc;
@@ -44,6 +50,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "FATAL ERROR: This program was not correctly compiled - the endianess is wrong!\nUse -DSWAPEND when compiling on PPC or similar platforms.\n");
 		return -100;
     }
+
+	ulog_set_app_name("Rserve");
     
     loadConfig(CONFIG_FILE);
     
@@ -127,20 +135,41 @@ int main(int argc, char **argv)
 				isRSP = 1;
 				setConfig("remote", "enable");
 			}
+			if (!strcmp(argv[i] + 2, "RS-set")) {
+				isRSP = 1;
+                if (++i == argc)
+					fprintf(stderr,"Missing argument for --RS-set.\n");
+				else {
+					char *c = argv[i], *c2 = strchr(c, '=');
+					if (!c2) 
+						c2 = "";
+					else {
+						*c2 = 0;
+						c2++;
+					}
+					if (!setConfig(c, c2))
+						fprintf(stderr, "WARNING: configuration directive '%s' is not supported (used in --RS-set)\n", c);
+				}
+			}
 			if (!strcmp(argv[i] + 2, "RS-settings")) {
 				printf("Rserve v%d.%d-%d\n\nconfig file: %s\nworking root: %s\nport: %d\nlocal socket: %s\nauthorization required: %s\nplain text password: %s\npasswords file: %s\nallow I/O: %s\nallow remote access: %s\ncontrol commands: %s\ninteractive: %s\nmax.input buffer size: %ld kB\n\n",
 					   RSRV_VER>>16, (RSRV_VER>>8)&255, RSRV_VER&255,
 					   CONFIG_FILE, workdir, port, localSocketName ? localSocketName : "[none, TCP/IP used]",
 					   authReq ? "yes" : "no", usePlain ? "allowed" : "not allowed", pwdfile ? pwdfile : "[none]",
 					   allowIO ? "yes" : "no", localonly ? "no" : "yes",
-					   child_control ? "yes" : "no", Rsrv_interactive ? "yes" : "no", maxInBuf / 1024L);
+					   "no", Rsrv_interactive ? "yes" : "no", maxInBuf / 1024L);
 				return 0;	       
 			}
 			if (!strcmp(argv[i] + 2, "version")) {
 				printf("Rserve v%d.%d-%d (%s)\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255,rserve_rev);
 			}
+			/* this is really an R option but we'll abuse it to stay really silent
+			   note that we don't use -q/--quiet so there is a way to pick and choose */
+			if (!strcmp(argv[i] + 2, "silent")) {
+				rs_silent = 1;
+			}
 			if (!strcmp(argv[i] + 2, "help")) {
-				printf("Usage: R CMD Rserve [<options>]\n\nOptions: --help  this help screen\n --version  prints Rserve version (also passed to R)\n --RS-port <port>  listen on the specified TCP port\n --RS-socket <socket>  use specified local (unix) socket instead of TCP/IP.\n --RS-workdir <path>  use specified working directory root for connections.\n --RS-encoding <enc>  set default server string encoding to <enc>.\n --RS-conf <file>  load additional config file.\n --RS-settings  dumps current settings of the Rserve\n --RS-source <file>  source the specified file on startup.\n --RS-enable-control  enable control commands\n --RS-enable-remote  enable remote connections\n\nAll other options are passed to the R engine.\n\n");
+				printf("Usage: R CMD Rserve [<options>]\n\nOptions: --help  this help screen\n --version  prints Rserve version (also passed to R)\n --RS-port <port>  listen on the specified TCP port\n --RS-socket <socket>  use specified local (unix) socket instead of TCP/IP.\n --RS-workdir <path>  use specified working directory root for connections.\n --RS-encoding <enc>  set default server string encoding to <enc>.\n --RS-conf <file>  load additional config file.\n --RS-settings  dumps current settings of the Rserve\n --RS-source <file>  source the specified file on startup.\n --RS-enable-control  enable control commands\n --RS-enable-remote  enable remote connections\n --RS-pidfile <file>  store the pid of the Rserve process in <file>\n --RS-set <config>=<value>   set configuration option as if it was\n                             read from a configuration file\n\nAll other options are passed to the R engine.\n\n");
 #ifdef RSERV_DEBUG
 				printf("debugging flag:\n --RS-dumplimit <number>  sets limit of items/bytes to dump in debugging output. set to 0 for unlimited\n\n");
 #endif
@@ -173,6 +202,28 @@ int main(int argc, char **argv)
 	   Rserve's internal code which would prefer death to surrender ... */
 #endif
 
+	/* registration must happen *before* source/eval */
+	{ /* NOTE: R_registerRoutines *replaces* all existing registrations !!
+		 So we have to register everything for all. */
+		R_CallMethodDef mainCallMethods[]  = {
+			{"Rserve_ctrlEval", (DL_FUNC) &Rserve_ctrlEval, 1},
+			{"Rserve_ctrlSource", (DL_FUNC) &Rserve_ctrlSource, 1},
+			{"Rserve_oobSend", (DL_FUNC) &Rserve_oobSend, 2},
+			{"Rserve_oobMsg", (DL_FUNC) &Rserve_oobMsg, 2},
+			{"Rserve_oc_register", (DL_FUNC) &Rserve_oc_register, 2},
+			{"Rserve_oc_resolve", (DL_FUNC) &Rserve_oc_resolve, 1},
+			{"Rserve_ulog", (DL_FUNC) &Rserve_ulog, 1},
+			{"Rserve_fork_compute", (DL_FUNC) &Rserve_fork_compute, 1},
+			{"Rserve_kill_compute", (DL_FUNC) &Rserve_kill_compute, 1},
+			{"Rserve_forward_stdio", (DL_FUNC) &Rserve_forward_stdio, 0},
+			{"Rserve_eval", (DL_FUNC) &Rserve_eval, 4},
+			{"Rserve_get_context", (DL_FUNC) &Rserve_get_context, 0},
+			{"Rserve_set_context", (DL_FUNC) &Rserve_set_context, 1},
+			{NULL, NULL, 0}
+		};
+		R_registerRoutines(R_getEmbeddingDllInfo(), 0, mainCallMethods, 0, 0);
+	}
+	
     if (src_list) { /* do any sourcing if necessary */
 		struct source_entry *se=src_list;
 #ifdef RSERV_DEBUG
@@ -191,36 +242,6 @@ int main(int argc, char **argv)
     }
 	
 	performConfig(SU_SERVER);
-
-	{ /* NOTE: R_registerRoutines *replaces* all existing registrations !!
-		 So we have to register everything for all. */
-		R_CallMethodDef mainCallMethods[]  = {
-			{"Rserve_ctrlEval", (DL_FUNC) &Rserve_ctrlEval, 1},
-			{"Rserve_ctrlSource", (DL_FUNC) &Rserve_ctrlSource, 1},
-			{"Rserve_oobSend", (DL_FUNC) &Rserve_oobSend, 2},
-			{"Rserve_oobMsg", (DL_FUNC) &Rserve_oobMsg, 2},
-			{"Rserve_oc_register", (DL_FUNC) &Rserve_oc_register, 1},
-			{NULL, NULL, 0}
-		};
-		R_registerRoutines(R_getEmbeddingDllInfo(), 0, mainCallMethods, 0, 0);
-	}
-	
-#if defined RSERV_DEBUG || defined Win32
-    printf("Rserve: Ok, ready to answer queries.\n");
-#endif      
-    
-#if defined DAEMON && defined unix
-	if (daemonize) {
-		/* ok, we're in unix, so let's daemonize properly */
-		if (fork() != 0) {
-			puts("Rserv started in daemon mode.");
-			exit(0);
-		}
-		setsid();
-		chdir("/");
-	} else puts("Rserve started in non-daemon mode.");
-#endif
-	RSsrv_init();
 
 #ifdef unix
     umask(umask_value);
@@ -277,6 +298,38 @@ int main(int argc, char **argv)
 			}
 		}
 	}
+
+#if defined DAEMON && defined unix
+	if (daemonize) {
+		/* ok, we're in unix, so let's daemonize properly */
+		if (fork() != 0) {
+			if (!rs_silent)
+				puts("Rserv started in daemon mode.");
+			exit(0);
+		}
+		setsid();
+		if (chdir("/")) {} /* start in root which is guaranteed to exist */
+		if (close_all_io) {
+			int fd = open("/dev/null", O_RDWR);
+			if (fd == -1 ||
+				dup2(fd, STDOUT_FILENO) == -1 ||
+				dup2(fd, STDERR_FILENO) == -1 ||
+				dup2(fd, STDIN_FILENO) == -1)
+				ulog("WARNING: failed to redirect all I/O to /dev/null");
+			else {
+				close(STDOUT_FILENO);
+				close(STDERR_FILENO);
+				close(STDIN_FILENO);
+			}
+		}
+	} else if (!rs_silent) puts("Rserve started in non-daemon mode.");
+#endif
+
+#if defined RSERV_DEBUG || defined Win32
+    printf("Rserve: Ok, ready to answer queries.\n");
+#endif
+
+	RSsrv_init();
 
 	setup_signal_handlers();
 

@@ -1,7 +1,7 @@
 package org.rosuda.REngine.Rserve;
 
 // JRclient library - client interface to Rserve, see http://www.rosuda.org/Rserve/
-// Copyright (C) 2004-08 Simon Urbanek
+// Copyright (C) 2004-21 Simon Urbanek
 // --- for licensing information see LICENSE file in the original JRclient distribution ---
 
 import java.util.*;
@@ -24,6 +24,11 @@ public class RConnection extends REngine {
     int authType=AT_plain;
     String Key=null;
     RTalk rt=null;
+
+    REXP capabilities = null;
+    OOBInterface oob = null;
+
+    boolean isOCAP = false;
 
     String host;
     int port;
@@ -66,58 +71,121 @@ public class RConnection extends REngine {
 		this(null, 0, session);
     }
 
+
     RConnection(String host, int port, RSession session) throws RserveException {
         try {
             if (connected) s.close();
-            s=null;
+            s = null;
         } catch (Exception e) {
-            throw new RserveException(this,"Cannot connect: "+e.getMessage());
+            throw new RserveException(this, "Cannot close previous connection: " + e.getMessage(), e);
         }
-		if (session!=null) {
-			host=session.host;
-			port=session.port;
-		}
-        connected=false;
-		this.host=host;
-		this.port=port;
+	if (session != null) {
+	    host = session.host;
+	    port = session.port;
+	}
+        connected = false;
+	this.host = host;
+	this.port = port;
         try {
-            s=new Socket(host,port);
-			// disable Nagle's algorithm since we really want immediate replies
-			s.setTcpNoDelay(true);
+            Socket ss = new Socket(host,port);
+	    // disable Nagle's algorithm since we really want immediate replies
+	    ss.setTcpNoDelay(true);
+	    initWithSocket(ss, session);
         } catch (Exception sce) {
-            throw new RserveException(this,"Cannot connect: "+sce.getMessage());
+            throw new RserveException(this, "Cannot connect: "+sce.getMessage(), sce);
         }
+    }
+
+    /** create a connection based on a previously obtained
+	socket. This constructor allows the use of other communication
+	protocols than TCP/IP (if a Socket implementation exists) or
+	tunneling through other protocols that expose socket insteface
+	(such as SSL).
+	@param sock connected socket
+    */
+    
+    public RConnection(Socket sock) throws RserveException {
+	this.host = null;
+	this.port = 0;
         try {
-            is=s.getInputStream();
-            os=s.getOutputStream();
-        } catch (Exception gse) {
-            throw new RserveException(this,"Cannot get io stream: "+gse.getMessage());
+            if (connected) s.close();
+	    connected = false;
+            s = null;
+        } catch (Exception e) {
+            throw new RserveException(this, "Cannot close previous connection: " + e.getMessage(), e);
         }
-        rt=new RTalk(is,os);
+	initWithSocket(sock, null);
+    }
+
+    /** set OOB callbacks, i.e. an object that will handle OOB_SEND and OOB_MSG packets in OCAP mode
+	@param callbacks object implementing the OOB interface */
+    public void setOOB(OOBInterface callbacks) {
+	oob = callbacks;
+    }
+
+    /** initialization in OCAP mode, assumes all communication variables are setup already, expected to be called
+	by initWithSocket */
+    private void initOCAP(Socket sock, byte[] header) throws RserveException {
+	/* there is no version in OCAP but 103 is assumed since that is
+	   the earliest version that supports OCAPs */
+	rsrvVersion = 103;
+	isOCAP = true;
+	connected = true;
+	RPacket rp = rt.response(header);
+	capabilities = parseEvalResponse(rp);
+    }
+
+    private void initWithSocket(Socket sock, RSession session) throws RserveException {
+	s = sock;
+        try {
+            is = s.getInputStream();
+            os = s.getOutputStream();
+        } catch (Exception gse) {
+            throw new RserveException(this, "Cannot get io stream: " + gse.getMessage(), gse);
+        }
+        rt = new RTalk(is,os);
 		if (session==null) {
 			byte[] IDs=new byte[32];
 			int n=-1;
 			try {
 				n=is.read(IDs);
 			} catch (Exception sre) {
-				throw new RserveException(this,"Error while receiving data: "+sre.getMessage());
+			    throw new RserveException(this, "Error while receiving data: "+sre.getMessage(), sre);
 			}
 			try {
+				/* is this OCAP mode ? */
+                                if (n >= 16 &&
+				    IDs[0] == 0x52 && IDs[1] == 0x73 &&
+                                    IDs[2] == 0x4f && IDs[3] == 0x43) {
+					/* it is possible that the buffering doesn't work out
+					   and the first packet is <32 bytes, in which case
+					   we have to re-wrap the array to have the correct length */
+                                        if (n < 32) {
+                                                byte[] header = new byte[n];
+                                                System.arraycopy(IDs, 0, header, 0, n);
+                                                IDs = header;
+                                        }
+
+                                        initOCAP(sock, IDs);
+                                        return;
+                                }
+
 				if (n!=32) {
 					throw new RserveException(this,"Handshake failed: expected 32 bytes header, got "+n);
 				}
-				String ids=new String(IDs);
+				String ids = new String(IDs);
+				/* regular Rserve mode? */
 				if (ids.substring(0,4).compareTo("Rsrv")!=0)
-					throw new RserveException(this,"Handshake failed: Rsrv signature expected, but received \""+ids+"\" instead.");
+					throw new RserveException(this, "Handshake failed: Rsrv signature expected, but received \""+ids+"\" instead.");
 				try {
 					rsrvVersion=Integer.parseInt(ids.substring(4,8));
 				} catch (Exception px) {}
 				// we support (knowingly) up to 103
-				if (rsrvVersion>103)
-					throw new RserveException(this,"Handshake failed: The server uses more recent protocol than this client.");
+				if (rsrvVersion > 103)
+					throw new RserveException(this, "Handshake failed: The server uses more recent protocol than this client.");
 				if (ids.substring(8,12).compareTo("QAP1")!=0)
-					throw new RserveException(this,"Handshake failed: unupported transfer protocol ("+ids.substring(8,12)+"), I talk only QAP1.");
-				for (int i=12;i<32;i+=4) {
+					throw new RserveException(this, "Handshake failed: unupported transfer protocol ("+ids.substring(8,12)+"), I talk only QAP1.");
+				for (int i=12; i<32; i+=4) {
 					String attr=ids.substring(i,i+4);
 					if (attr.compareTo("ARpt")==0) {
 						if (!authReq) { // this method is only fallback when no other was specified
@@ -141,7 +209,7 @@ public class RConnection extends REngine {
 			try {
 				os.write(session.key,0,32);
 			} catch (Exception sre) {
-				throw new RserveException(this,"Error while sending session key: "+sre.getMessage());
+			    throw new RserveException(this, "Error while sending session key: " + sre.getMessage(), sre);
 			}
 			rsrvVersion = session.rsrvVersion;
 		}
@@ -170,7 +238,20 @@ public class RConnection extends REngine {
         } catch(Exception e) { };
 		return false;
     }
-    
+
+    /** Returns capabilities received from the server on connect.
+	For non-OCAP mode this always returns <code>null</code> */
+    public REXP capabilities() {
+	return capabilities;
+    }
+
+    /** Check whether this connection is to Rserve in OCAP mode. Note that <code>callOC</code> is
+	the only command allowed in OCAP mode.
+	@return <code>true</code> if this connection is in OCAP mode, <code>false</code> otherwise. */
+    public boolean isOCAP() {
+	return isOCAP;
+    }
+
     /** evaluates the given command, but does not fetch the result (useful for assignment
 	operations)
 	@param cmd command/expression string */
@@ -216,7 +297,7 @@ public class RConnection extends REngine {
 				return rx.getREXP();
 			} catch (REXPMismatchException me) {
 				me.printStackTrace();
-				throw new RserveException(this, "Error when parsing response: "+me.getMessage());
+				throw new RserveException(this, "Error when parsing response: " + me.getMessage(), me);
 			}
 		}
 		return null;
@@ -239,25 +320,68 @@ public class RConnection extends REngine {
         @param ct contents
         */
     public void assign(String sym, String ct) throws RserveException {
-		if (!connected || rt==null)
-            throw new RserveException(this,"Not connected");
-        byte[] symn=sym.getBytes();
-        byte[] ctn=ct.getBytes();
-        int sl=symn.length+1;
-        int cl=ctn.length+1;
-        if ((sl&3)>0) sl=(sl&0xfffffc)+4; // make sure the symbol length is divisible by 4
-        if ((cl&3)>0) cl=(cl&0xfffffc)+4; // make sure the content length is divisible by 4
-        byte[] rq=new byte[sl+4+cl+4];
-        int ic;
-        for(ic=0;ic<symn.length;ic++) rq[ic+4]=symn[ic];
-        while (ic<sl) { rq[ic+4]=0; ic++; }
-        for(ic=0;ic<ctn.length;ic++) rq[ic+sl+8]=ctn[ic];
-        while (ic<cl) { rq[ic+sl+8]=0; ic++; }
-		RTalk.setHdr(RTalk.DT_STRING,sl,rq,0);
-		RTalk.setHdr(RTalk.DT_STRING,cl,rq,sl+4);
-		RPacket rp=rt.request(RTalk.CMD_setSEXP,rq);
-        if (rp!=null && rp.isOk()) return;
-        throw new RserveException(this,"assign failed",rp);
+	if (!connected || rt==null)
+	    throw new RserveException(this,"Not connected");
+	try {
+	    byte[] symn = sym.getBytes(transferCharset);
+	    byte[] ctn = ct.getBytes(transferCharset);
+	    int sl = symn.length + 1;
+	    int cl = ctn.length + 1;
+	    if ((sl & 3) > 0) sl = (sl & 0xfffffc) + 4; // make sure the symbol length is divisible by 4
+	    if ((cl & 3) > 0) cl = (cl & 0xfffffc) + 4; // make sure the content length is divisible by 4
+	    byte[] rq=new byte[sl + 4 + cl + 4];
+	    int ic;
+	    for (ic = 0;ic < symn.length; ic++)
+		rq[ic + 4] = symn[ic];
+	    while (ic < sl)
+		{ rq[ic + 4] = 0; ic++; }
+	    for (ic = 0; ic < ctn.length; ic++)
+		rq[ic + sl + 8] = ctn[ic];
+	    while (ic < cl)
+		{ rq[ic + sl + 8] = 0; ic++; }
+	    RTalk.setHdr(RTalk.DT_STRING, sl, rq, 0);
+	    RTalk.setHdr(RTalk.DT_STRING, cl, rq, sl + 4);
+	    RPacket rp = rt.request(RTalk.CMD_setSEXP, rq);
+	    if (rp !=null && rp.isOk()) return;
+	    throw new RserveException(this, "assign failed", rp);
+	} catch(java.io.UnsupportedEncodingException e) {
+	    throw new RserveException(this, "unsupported encoding in assign(String,String)", e);
+	}
+    }
+
+    public REXP callOCAP(REXP call) throws RserveException {
+	if (!connected || rt == null)
+	    throw new RserveException(this, "Not connected");
+	if (!isOCAP)
+	    throw new RserveException(this, "callOCAP is only available in OCAP mode");
+
+	RPacket rp = rt.request(RTalk.CMD_OCcall, call);
+	/* process any OOB messages */
+	while (rp != null && rp.isOOB()) {
+	    REXP payload = parseEvalResponse(rp);
+	    if ((rp.getCmd() & 0xff000) == RTalk.OOB_SEND) {
+		if (oob != null)
+		    oob.oobSend(rp.getCmd() & 0xfff, payload);
+		rp = rt.response();
+	    } else if ((rp.getCmd() & 0xff000) == RTalk.OOB_MSG) {
+		if (oob == null)
+		    throw new RserveException(this, "OOB_MSG received, but no OOB listener registered", rp);
+		REXP res = oob.oobMessage(rp.getCmd() & 0xfff, payload);
+		if (res == null)
+		    throw new RserveException(this, "OOB_MSG callback returned null", rp);
+		    // FIXME: we don't have official documentation for this - what is the
+		    // correct response to OOB_MSG? rserve-js uses cmd | RESP_OK/RESP_ERR
+		    // but that mangles low two bits of the OOB code
+		    // Rserve itself doesn't care so it is technically undefined
+		    // The most senstible thing to do is to just copy the cmd since
+		    // the recieving end knows that this is a msg response
+		rp = rt.request(rp.getCmd(), res);
+	    } else
+		throw new RserveException(this, "Unsupported OOB command received", rp);
+	}
+	if (rp == null || !rp.isOk())
+	    throw new RserveException(this,"callOCAP failed", rp);
+	return parseEvalResponse(rp);
     }
 
     /** assign a content of a REXP to a symbol in R. The symbol is created if it doesn't exist already.
@@ -269,9 +393,9 @@ public void assign(String sym, REXP rexp) throws RserveException {
 	    throw new RserveException(this,"Not connected");
 	try {
 		REXPFactory r = new REXPFactory(rexp);
-		int rl=r.getBinaryLength();
-		byte[] symn=sym.getBytes();
-		int sl=symn.length+1;
+		int rl = r.getBinaryLength();
+		byte[] symn = sym.getBytes(transferCharset);
+		int sl = symn.length+1;
 		if ((sl&3)>0) sl=(sl&0xfffffc)+4; // make sure the symbol length is divisible by 4
 		byte[] rq=new byte[sl+rl+((rl>0xfffff0)?12:8)];
 		int ic;
@@ -283,8 +407,10 @@ public void assign(String sym, REXP rexp) throws RserveException {
 		RPacket rp=rt.request(RTalk.CMD_setSEXP,rq);
 		if (rp!=null && rp.isOk()) return;
 		throw new RserveException(this,"assign failed",rp);
+	} catch(java.io.UnsupportedEncodingException e) {
+	    throw new RserveException(this, "unsupported encoding in assign(String,REXP)", e);
 	} catch (REXPMismatchException me) {
-		throw new RserveException(this, "Error creating binary representation: "+me.getMessage());
+	    throw new RserveException(this, "Error creating binary representation: "+me.getMessage(), me);
 	}
 }
 
@@ -443,15 +569,33 @@ public void assign(String sym, REXP rexp) throws RserveException {
 public REXP parse(String text, boolean resolve) throws REngineException {
 	throw new REngineException(this, "Rserve doesn't support separate parsing step.");
 }
+
 public REXP eval(REXP what, REXP where, boolean resolve) throws REngineException {
-	return new REXPNull();
+	if (!connected || rt==null)
+		throw new RserveException(this, "Not connected");
+	if (where != null)
+		throw new REngineException(this, "Rserve doesn't support environments other than .GlobalEnv");
+	try {
+		REXPFactory r = new REXPFactory(what);
+		int rl = r.getBinaryLength();
+		byte[] rq = new byte[rl + ((rl > 0xfffff0) ? 8 : 4)];
+		RTalk.setHdr(RTalk.DT_SEXP, rl, rq, 0);
+		r.getBinaryRepresentation(rq, ((rl > 0xfffff0) ? 8 : 4));
+		RPacket rp = rt.request(resolve ? RTalk.CMD_eval : RTalk.CMD_voidEval, rq);
+		if (rp != null && rp.isOk())
+			return parseEvalResponse(rp);
+		throw new RserveException(this,"eval failed", rp);
+	} catch (REXPMismatchException me) {
+		throw new RserveException(this, "Error creating binary representation: " + me.getMessage(), me);
+	}
 }
+
 public REXP parseAndEval(String text, REXP where, boolean resolve) throws REngineException {
 	if (where!=null) throw new REngineException(this, "Rserve doesn't support environments other than .GlobalEnv");
 	try {
 		return eval(text);
 	} catch (RserveException re) {
-		throw new REngineException(this, re.getMessage());
+	    throw new REngineException(this, re.getMessage(), re);
 	}
 }
 
@@ -464,7 +608,7 @@ public void assign(String symbol, REXP value, REXP env) throws REngineException 
 	try {
 		assign(symbol, value);
 	} catch (RserveException re) {
-		throw new REngineException(this, re.getMessage());
+	    throw new REngineException(this, re.getMessage(), re);
 	}
 }
 
@@ -476,7 +620,7 @@ public void assign(String symbol, REXP value, REXP env) throws REngineException 
 public REXP get(String symbol, REXP env, boolean resolve) throws REngineException {
 	if (!resolve) throw new REngineException(this, "Rserve doesn't support references");
 	try {
-		return eval("get(\""+symbol+"\")");
+		return eval(new REXPSymbol(symbol), env, true);
 	} catch (RserveException re) {
 		throw new REngineException(this, re.getMessage());
 	}

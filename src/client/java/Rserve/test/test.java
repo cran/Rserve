@@ -213,7 +213,7 @@ public class test {
 		}
 		
 		{ // string encoding test (will work with Rserve 0.5-3 and higher only)
-			System.out.println("* Test string encoding support ...");
+			System.out.println("* Test string UTF-8 encoding support ...");
 			String t = "ひらがな"; // hiragana (literally, in hiragana ;))
 			c.setStringEncoding("utf8");
 			// -- Just in case the console is not UTF-8 don't display it
@@ -224,6 +224,47 @@ public class test {
 			if (x == null || !x.isInteger() || x.asInteger() != 4)
 				throw new TestException("UTF-8 encoding string length test failed");
 			// we cannot really test any other encoding ..
+			System.out.println("PASSED");
+		}
+
+		{ // string encoding test (will work with Rserve 0.5-3 and higher only)
+			System.out.println("* Test assign() transcoding support in ISO-8859-1 (latin1) locale ...");
+			if (!java.nio.charset.Charset.defaultCharset().name().contains("ISO-8859"))
+			    System.out.println("  (NOTE: this test requires Java to run in ISO-8859-1 locale, so try setting LANG=de_DE.ISO8859-1)");
+			String t = "mühsam"; // must be representable in ISO-8859-1 as one byte
+			c.setStringEncoding("utf8"); // Rserve should send this as UTF-8
+			c.assign("s", t);
+			REXP x = c.parseAndEval("length(charToRaw(s))");
+			System.out.println("  bytes = " + x + " " + ((x != null && x.isInteger()) ? x.asInteger() : ""));
+			if (x == null || !x.isInteger() || x.asInteger() != 7)
+				throw new TestException("UTF-8 encoding string length test failed");
+			// we cannot really test any other encoding ..
+			System.out.println("PASSED");
+		}
+
+		{ // test QAP evals
+			System.out.println("* Test eval without parse (direct calls) ...");
+			System.out.println("  call 1L + 2 as a language construct");
+			REXP x = c.eval(REXP.asCall("+",
+						    new REXPInteger(1),
+						    new REXPDouble(2)), null, true);
+			if (x == null || !x.isNumeric() || x.asDouble() != 3)
+				throw new TestException("evaluating 1L + 2 as a call failed");
+			System.out.println("  call a compound statement and exported symbol");
+			x = c.eval(REXP.asCall("{", new REXP[] {
+						// X <- local vector 1,2,3,4
+						REXP.asCall("<-", new REXPSymbol("X"), new REXPInteger(new int[] { 1, 2, 3, 4 })),
+						// base::length(X)  # convoluted for the sake of testing exported symbols
+						REXP.asCall(REXP.asCall("::", new REXPSymbol("base"), new REXPSymbol("length")),
+							    new REXPSymbol("X"))
+					}), null, true);
+			if (x == null || !x.isInteger() || x.asInteger() != 4)
+				throw new TestException("calling a compound statement failed");
+			// since we did an assignment we mauy as well test the get() method
+			System.out.println("  get from global env");
+			x = c.get("X", null, true);
+			if (x == null || !x.isInteger() || x.length() != 4)
+				throw new TestException("retrieving value created by assignment expression call failed");
 			System.out.println("PASSED");
 		}
 		
