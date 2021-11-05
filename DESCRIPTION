@@ -1,5 +1,5 @@
 Package: Rserve
-Version: 1.8-8
+Version: 1.8-9
 Title: Binary R server
 Author: Simon Urbanek <Simon.Urbanek@r-project.org>
 Maintainer: Simon Urbanek <Simon.Urbanek@r-project.org>
@@ -19,6 +19,6 @@ License: GPL-2 | file LICENSE
 URL: http://www.rforge.net/Rserve/
 Biarch: true
 NeedsCompilation: yes
-Packaged: 2021-11-03 02:37:01 UTC; rforge
+Packaged: 2021-11-05 08:42:03 UTC; rforge
 Repository: CRAN
-Date/Publication: 2021-11-03 10:30:31 UTC
+Date/Publication: 2021-11-05 11:05:50 UTC

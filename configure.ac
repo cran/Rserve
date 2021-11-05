@@ -3,6 +3,7 @@ AC_INIT([Rserve],[1.8],[Simon.Urbanek@r-project.org])
 AC_CONFIG_SRCDIR([src/Rserv.c])
 AC_CONFIG_HEADERS([src/config.h])
 AC_CONFIG_AUX_DIR([tools])
+AC_CONFIG_MACRO_DIRS([tools/m4])
 
 # find R home and set CC/CFLAGS
 : ${R_HOME=`R RHOME`}
@@ -119,6 +120,7 @@ Try adding -D_BIG_ENDIAN_ or -D_LITTLE_ENDIAN_ to PKG_CPPFLAGS.
 ])])
 ])
 
+AC_CHECK_SIZEOF(size_t)
 
 # Checks for library functions.
 AC_FUNC_FORK
