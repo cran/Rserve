@@ -74,7 +74,9 @@ AM_CONDITIONAL(WITH_PROXY,  [test "x${with_proxy}" = xyes])
 
 CC=`${R_HOME}/bin/R CMD config CC`;
 CXX=`${R_HOME}/bin/R CMD config CXX`;
-CPPFLAGS="${CPPFLAGS} ${PKG_CPPFLAGS}"
+R_CPPFLAGS=`${R_HOME}/bin/R CMD config CPPFLAGS`;
+LDFLAGS=`${R_HOME}/bin/R CMD config LDFLAGS`;
+CPPFLAGS="${CPPFLAGS} ${PKG_CPPFLAGS} ${R_CPPFLAGS}"
 CFLAGS=`${R_HOME}/bin/R CMD config CFLAGS`
 CXXFLAGS=`${R_HOME}/bin/R CMD config CXXFLAGS`
 RINC=`${R_HOME}/bin/R CMD config --cppflags`
@@ -221,15 +223,16 @@ AC_CHECK_HEADER([openssl/ssl.h],
 AC_MSG_CHECKING([whether threads are desired])
 if test "$want_threads" != no; then
    AC_MSG_RESULT([yes])
-   AC_MSG_CHECKING([for working threads support])
    AX_PTHREAD([
      LIBS="$PTHREAD_LIBS $LIBS"
      ## we don't want to mess with CFLAGS so we (ab)use CPPFLAGS
      CPPFLAGS="$CPPFLAGS $PTHREAD_CFLAGS" 
      ## and we ignore PTHREAD_CC since we have to use R's settings
      with_threads=yes
+     AC_MSG_CHECKING([for working threads support])
      AC_MSG_RESULT([yes])
    ], [
+     AC_MSG_CHECKING([for working threads support])
      AC_MSG_RESULT([no])
      if test "$want_threads" = yes; then
        AC_MSG_ERROR([Threads were requested, but no working threads support was found])

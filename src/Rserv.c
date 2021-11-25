@@ -355,7 +355,16 @@ rlen_t maxSendBufSize = 0; /* max. sendbuf for auto-resize. 0=no limit */
 
 int Rsrv_interactive = 1; /* default for R_Interactive flag */
 
-static char authkey[1024];  /* server-side authentication key */
+/* length of the authkey to send in CMD_keyReq
+   authkey serves primarily as nonce so doesn't have to be too big,
+   in fact versions <= 1.8-9 used 512 bytes which was too big since
+   it guaranteed that the authentication information would be encrypted
+   in the second block thus defeating the purpose.  We use 4096-bit
+   RSA keys which gives roughly 471 bytes of payload.
+*/
+#define SRV_KEY_LEN 256
+
+static char authkey[SRV_KEY_LEN];  /* server-side authentication key */
 static int authkey_req = 0; /* number of auth requests */
 static char *auth_fn;       /* authentication function */
 
@@ -2267,6 +2276,8 @@ int Rserve_prepare_child(args_t *args) {
 
 #endif
 
+	authkey_req = 0; /* reset auth count for non-forked servers */
+
 	self_args = args;
 
 	return 0;
@@ -2523,8 +2534,6 @@ static int auth_user(const char *usr, const char *pwd, const char *salt) {
 static RSA *rsa_srv_key;
 
 static char rsa_buf[32768];
-
-#define SRV_KEY_LEN 512
 
 /* from base64.c */
 int base64decode(const char *src, void *dst, int max_len);
@@ -4251,16 +4260,18 @@ void Rserve_QAP1_connected(void *thp) {
 			}
 			continue;
 		}
-
+		/* uint32_t len; byte[len] key;
+		   utin32_t len; char[len] auth (username\npwd\n) */
 		if (ph.cmd == CMD_secLogin) {
 #ifdef HAVE_RSA
 			if (pars < 1 || parT[0] != DT_BYTESTREAM || parL[0] >= sizeof(rsa_buf))
 				sendResp(a, SET_STAT(RESP_ERR, ERR_inv_par));
 			else {
 				int dl = 0;
-				if (!rsa_srv_key || (dl = rsa_decode(rsa_buf, (char*) parP[0], parL[0])) < 1) {
+				/* the authkey must have been requested */
+				if (!authkey_req || !rsa_srv_key || (dl = rsa_decode(rsa_buf, (char*) parP[0], parL[0])) < 1) {
 #ifdef RSERV_DEBUG
-					printf("CMD_secLogin: decode failed - rsa_srv_key=%p, dl = %d (payload %d)\n", (void*)rsa_srv_key, dl, (int) parL[0]);
+					printf("CMD_secLogin: decode failed - authkey_req=%d, rsa_srv_key=%p, dl = %d (payload %d)\n", authkey_req, (void*)rsa_srv_key, dl, (int) parL[0]);
 #endif
 					sendResp(a, SET_STAT(RESP_ERR, ERR_auth_failed));
 				} else {

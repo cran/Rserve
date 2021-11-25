@@ -8,8 +8,36 @@ NOTE: Rserve 1.8 series has many new features, but it has also removed
       know what it means, just ignore this note.
 
 
-1.8-9
+1.8-10	2021-11-25
+    o	reduce the size of the authkey (nonce) in CMD_reqKey to
+	256 bytes such that the payload of CMD_secLogin can fit
+	into one encryption block (for 4096-bit RSA key). This
+	improves the nonce entropy size from 50 bytes to 256.
+	Note that effectively the maximum safe size of the
+	authentication payload is 206 bytes. Larger sizes can be
+	transmitted, but should be considered unsafe due to
+	the second block not including any nonce.
+
+    o	Prevent replay attacks on non-forked servers using
+	CMD_secLogin without CMD_keyReq. (Thanks to
+	Dane Henshall for reporting!)
+	Deployments relying on CMD_secLogin for authentication
+	should upgrade to this version to avoid vulnerability.
+	Note that clients do not have to be updated.
+
+    o	Respect CPPFLAGS and LDFLAGS from R CMD config
+
+
+1.8-9	2021-11-05
     o	move m4 under tools according to R-exts 1.2
+
+    o	several fixes to QAP encoding/decoding, use R_xlen_t
+	type for indexing if available (previously Windows
+	builds used 32-bit index due to long int size limits).
+
+    o	protection fixes for serialized commands
+
+    o	remove rsio entirely since it is not used
 
 
 1.8-8	2021-10-31
