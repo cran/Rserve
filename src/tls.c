@@ -5,7 +5,9 @@
 #include "tls.h"
 
 #ifdef HAVE_TLS
-
+#ifndef OPENSSL_SUPPRESS_DEPRECATED
+#define OPENSSL_SUPPRESS_DEPRECATED 1
+#endif
 #include <openssl/ssl.h>
 #ifdef RSERV_DEBUG
 #include <openssl/err.h>
@@ -26,7 +28,7 @@ tls_t *shared_tls(tls_t *new_tls) {
     return tls;
 }
 
-tls_t *new_tls() {
+tls_t *new_tls(void) {
     tls_t *t = (tls_t*) calloc(1, sizeof(tls_t));
     
     if (first_tls) {
@@ -69,11 +71,11 @@ struct args {
     void *res2;
 };
 
-static int tls_recv(args_t *c, void *buf, rlen_t len) {
+static ssize_t tls_recv(args_t *c, void *buf, size_t len) {
     return SSL_read(c->ssl, buf, len);
 }
 
-static int tls_send(args_t *c, const void *buf, rlen_t len) {
+static ssize_t tls_send(args_t *c, const void *buf, size_t len) {
     return SSL_write(c->ssl, buf, len);
 }
 
@@ -138,7 +140,7 @@ int verify_peer_tls(args_t *c, char *cn, int len) {
 
 tls_t *shared_tls(tls_t *new_tls) { return 0; }
 
-tls_t *new_tls() { return 0; }
+tls_t *new_tls(void) { return 0; }
 int set_tls_pk(tls_t *tls, const char *fn) { return -1; }
 int set_tls_cert(tls_t *tls, const char *fn) { return -1; }
 int set_tls_ca(tls_t *tls, const char *fn_ca, const char *path_ca) { return -1; }

@@ -32,7 +32,7 @@
 #include "config.h"
 #endif
 
-#define RSRV_VER 0x01080a /* Rserve v1.8-10 */
+#define RSRV_VER 0x01080b /* Rserve v1.8-11 */
 
 #define default_Rsrv_port 6311
 
@@ -352,28 +352,24 @@ struct phdr {   /* always 16 bytes */
 #include <Rconfig.h> /* defines SIZEOF_SIZE_T in case we missed it */
 #endif
 
-/* long vectors - we don't want to mandate Rinternals.h here
-   so we use the minimal definition */
-#if ( SIZEOF_SIZE_T > 4 )
 #include <stddef.h> /* for ptrdiff_t, which is required by C99 */
-typedef ptrdiff_t rlen_t;
-/* this is used for alignment/masking */
-#define rlen_max ((rlen_t) 0x7fffffffffffffff)
-#else /* old legacy definition using unsigned long */
-/* this is the type used to calculate pointer distances */
-/* note: we may want to use size_t or something more compatible */
-typedef unsigned long rlen_t;
+#include <stdint.h> /* not directly used but for fixed-size int types */
+#include <sys/types.h> /* s/size_t */
 
-#ifdef ULONG_MAX
-#define rlen_max ULONG_MAX
+/* long vectors - we don't want to mandate Rinternals.h here
+   so we use the minimal definition. By now size_t and ptrdiff_t
+   should be ubiquitous so no more special cases */
+
+typedef ssize_t rlen_t;
+/* we really need an unsigned type for safety in places where R is not involved */
+typedef size_t urlen_t;
+
+/* this is used for alignment/masking */
+#if ( SIZEOF_SIZE_T > 4 )
+#define rlen_max ((rlen_t) 0x7fffffffffffffff)
 #else
-#ifdef __LP64__
-#define rlen_max 0xffffffffffffffffL 
-#else
-#define rlen_max 0xffffffffL
-#endif /* __LP64__ */
-#endif /* ULONG_MAX */
-#endif /* long vector fallback */
+#define rlen_max ((rlen_t) 0x7fffffff)
+#endif
 
 /* functions/macros to convert native endianess of int/double for transport
    currently ony PPC style and Intel style are supported */
@@ -424,13 +420,13 @@ extern void fixdcpy(void *t,void *s);
    is correct (it is not included if the package was configured with
    autoconf since then it should be fine anyway) */
 #ifdef MAIN
-int isByteSexOk() {
+int isByteSexOk(void) {
     int i;
     i=itop(0x12345678);
     return (*((char*)&i)==0x78);
 }
 #else
-extern int isByteSexOk();
+extern int isByteSexOk(void);
 #endif
 
 #else

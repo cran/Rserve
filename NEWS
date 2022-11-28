@@ -8,6 +8,34 @@ NOTE: Rserve 1.8 series has many new features, but it has also removed
       know what it means, just ignore this note.
 
 
+1.8-11	2022-11-28
+    o	fix possible buffer overflow attacks in WebSockets code (many
+	thanks to Dane Henshall for performing a security audit!)
+
+    o	clean up code to avoid mixing 32-bit and 64-bit integers on
+	64-bit platforms
+
+    o	enhance `Rserve.eval()` to report the condition object for
+	error conditions in the `condition` component of the
+	`Rserve-eval-error` object (#154) and to support custom 
+	calling	handlers.
+
+	This is done by adding a new argument `handlers` to
+	`Rserve.eval()` which allows registration of calling handlers
+	for the duration of the evaluation. The default
+	is to register an `error` handler which stores the condition
+	(via `Rserve_set_last_condition`) so `Rserve.eval` can pick
+	it up and return in the `condition` component. To revert
+	to previous behavior, use `handers=NULL` which prevents the
+	registration of handlers.
+
+    o	Issue a warning if eval/source configuration directive is used
+	in `run.Rserve()` since they only affect stand-alone Rserve
+	daemon startup and thus setting them in an R session is likely
+	a mistake (as the user can run R code directly in the session
+	prior to calling `run.Rserve()` instead).
+
+
 1.8-10	2021-11-25
     o	reduce the size of the authkey (nonce) in CMD_reqKey to
 	256 bytes such that the payload of CMD_secLogin can fit
