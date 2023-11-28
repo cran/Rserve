@@ -21,6 +21,7 @@ SEXP Rserve_set_last_condition(SEXP sCond);
 
 /* from http.c */
 SEXP Rserve_set_http_request_fn(SEXP sFn);
+SEXP Rserve_http_add_static(SEXP sPrefix, SEXP sPath, SEXP sIndex, SEXP sFlags);
 
 static int ex(int res) {
 	RSsrv_done();
@@ -162,8 +163,8 @@ int main(int argc, char **argv)
 					   CONFIG_FILE, workdir, port, localSocketName ? localSocketName : "[none, TCP/IP used]",
 					   authReq ? "yes" : "no", usePlain ? "allowed" : "not allowed", pwdfile ? pwdfile : "[none]",
 					   allowIO ? "yes" : "no", localonly ? "no" : "yes",
-					   "no", Rsrv_interactive ? "yes" : "no", maxInBuf / 1024L);
-				return 0;	       
+					   "no", Rsrv_interactive ? "yes" : "no", (long) (maxInBuf / 1024L));
+				return 0;
 			}
 			if (!strcmp(argv[i] + 2, "version")) {
 				printf("Rserve v%d.%d-%d (%s)\n",RSRV_VER>>16,(RSRV_VER>>8)&255,RSRV_VER&255,rserve_rev);
@@ -225,6 +226,7 @@ int main(int argc, char **argv)
 			{"Rserve_get_context", (DL_FUNC) &Rserve_get_context, 0},
 			{"Rserve_set_context", (DL_FUNC) &Rserve_set_context, 1},
 			{"Rserve_set_http_request_fn", (DL_FUNC) &Rserve_set_http_request_fn, 1},
+			{"Rserve_http_add_static", (DL_FUNC) &Rserve_http_add_static, 4},
 			{"Rserve_set_last_condition", (DL_FUNC) &Rserve_set_last_condition, 1},
 			{NULL, NULL, 0}
 		};

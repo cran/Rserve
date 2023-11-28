@@ -125,7 +125,9 @@ the use of DT_LARGE/XT_LARGE.
 
 #define USE_RINTERNALS 1
 #define SOCK_ERRORS
-#define LISTENQ 16
+#ifndef LISTENQ
+#define LISTENQ 32
+#endif
 #define MAIN
 
 /* some OSes don't like too large chunks to be sent/received,
@@ -2494,9 +2496,13 @@ static int auth_user(const char *usr, const char *pwd, const char *salt) {
 							printf(" - %s password matches.\n", (*c1 == '$' && strlen(c1) == 33) ? "MD5" :
 								   ((*c1 == '$' && strlen(c1) == 41) ? "SHA1" : "plain"));
 #endif
-						} else {
+						} else if (salt) {
 #ifdef HAS_CRYPT
-							c2 = crypt(c1, salt);
+							/* there is a bug in the Ubuntu 22.04+ libcrypt which incorrectly
+							   uses salt beyond the two bytes so to avoid it we use a copy
+							   and add NUL */
+							char salt3[3] = { salt[0], salt[1], 0 };
+							c2 = crypt(c1, salt3);
 #ifdef RSERV_DEBUG
 							printf(" - checking crypted '%s' vs '%s'\n", c2, pwd);
 #endif
@@ -3785,7 +3791,7 @@ int OCAP_iteration(qap_runtime_t *rt, struct phdr *oob_hdr) {
 							unsigned int osz = (rs > 0xffffffff) ? 0xffffffff : rs;
 							osz = itop(osz);
 #ifdef RSERV_DEBUG
-							printf("ERROR: object too big (buffer=%ld)\n", rt->buf_size);
+							printf("ERROR: object too big (buffer=%ld)\n", (long int) rt->buf_size);
 #endif
 							ulog("WARNING: object too big to send");
 							sendRespData(args, SET_STAT(RESP_ERR, ERR_object_too_big), 4, &osz);
@@ -4130,7 +4136,7 @@ void Rserve_QAP1_connected(void *thp) {
 						parType ^= DT_LARGE;
 					} 
 #ifdef RSERV_DEBUG
-					printf("PAR[%d]: %08lx (PAR_LEN=%ld, PAR_TYPE=%d, large=%s, c=%p, ptr=%p)\n", pars, i,
+					printf("PAR[%d]: %08lx (PAR_LEN=%ld, PAR_TYPE=%d, large=%s, c=%p, ptr=%p)\n", pars, (long unsigned) i,
 						   (long)parLen, parType, (headSize==8)?"yes":"no", (void*) c, (void*)(c + headSize));
 #endif
 #ifdef ALIGN_DOUBLES
@@ -4432,7 +4438,7 @@ void Rserve_QAP1_connected(void *thp) {
 					sendbuf = (char*)malloc(sendBufSize);
 					if (!sendbuf) {
 #ifdef RSERV_DEBUG
-						fprintf(stderr,"FATAL: out of memory while resizing send buffer to %ld,\n", sendBufSize);
+						fprintf(stderr,"FATAL: out of memory while resizing send buffer to %ld,\n", (long) sendBufSize);
 #endif
 						sendResp(a, SET_STAT(RESP_ERR, ERR_out_of_mem));
 						free(buf); free(sfbuf);
@@ -4801,7 +4807,7 @@ void Rserve_QAP1_connected(void *thp) {
 							if (rs < 0)
 								printf("ERROR: object encoding error\n");
 							else
-								printf("ERROR: object too big (sendBuf=%ld)\n", sendBufSize);
+								printf("ERROR: object too big (sendBuf=%ld)\n", (long) sendBufSize);
 #endif
 							sendRespData(a, SET_STAT(RESP_ERR, ERR_object_too_big), 4, &osz);
 						} else { /* try to allocate a large, temporary send buffer */
@@ -4821,7 +4827,7 @@ void Rserve_QAP1_connected(void *thp) {
 								sendbuf = (char*)malloc(sendBufSize);
 								if (!sendbuf) { /* we couldn't re-allocate the buffer */
 #ifdef RSERV_DEBUG
-									fprintf(stderr,"FATAL: out of memory while re-allocating send buffer to %ld (fallback#1)\n", sendBufSize);
+									fprintf(stderr,"FATAL: out of memory while re-allocating send buffer to %ld (fallback#1)\n", (long) sendBufSize);
 #endif
 									sendResp(a, SET_STAT(RESP_ERR, ERR_out_of_mem));
 									free(buf); free(sfbuf);
@@ -4833,7 +4839,7 @@ void Rserve_QAP1_connected(void *thp) {
 									unsigned int osz = (rs > 0xffffffff) ? 0xffffffff : rs;
 									osz = itop(osz);
 #ifdef RSERV_DEBUG
-									printf("ERROR: object too big (sendBuf=%ld) and couldn't allocate big enough send buffer\n", sendBufSize);
+									printf("ERROR: object too big (sendBuf=%ld) and couldn't allocate big enough send buffer\n", (long) sendBufSize);
 #endif
 									sendRespData(a, SET_STAT(RESP_ERR, ERR_object_too_big), 4, &osz);
 								}
@@ -4861,13 +4867,13 @@ void Rserve_QAP1_connected(void *thp) {
 						sendRespData(a, RESP_OK, tail - sendhead, sendhead);
 						if (tempSB) { /* if this is just a temporary sendbuffer then shrink it back to normal */
 #ifdef RSERV_DEBUG
-							printf("Releasing temporary sendbuf and restoring old size of %ld bytes.\n", sendBufSize);
+							printf("Releasing temporary sendbuf and restoring old size of %ld bytes.\n", (long) sendBufSize);
 #endif
 							free(sendbuf);
 							sendbuf = (char*)malloc(sendBufSize);
 							if (!sendbuf) { /* this should be really rare since tempSB was much larger */
 #ifdef RSERV_DEBUG
-								fprintf(stderr,"FATAL: out of memory while re-allocating send buffer to %ld (fallback#2),\n", sendBufSize);
+								fprintf(stderr,"FATAL: out of memory while re-allocating send buffer to %ld (fallback#2),\n", (long) sendBufSize);
 #endif
 								sendResp(a, SET_STAT(RESP_ERR, ERR_out_of_mem));
 										free(buf); free(sfbuf);
