@@ -350,9 +350,6 @@ SEXP Rserve_set_http_request_fn(SEXP sFn) {
 	return s_http_request_fn;
 }
 
-#define HSF_STOP          1 /* stop if prefix matches */
-#define HSF_PRECOMPRESSED 2 /* use pre-compressed .gz files */
-
 typedef struct http_static {
 	struct http_static *next;
 	char *prefix, *path, *index;
@@ -362,36 +359,93 @@ typedef struct http_static {
 
 static http_static *http_statics;
 
-SEXP Rserve_http_add_static(SEXP sPrefix, SEXP sPath, SEXP sIndex, SEXP sFlags) {
-	int n = 1;
+void *http_add_static_handler(const char *prefix, const char* path, const char *index, int flags) {
 	http_static *h, *hl;
+	h = (http_static*) malloc(sizeof(http_static));
+    if (!h)
+        return 0;
+    h->next = 0;
+    h->prefix = strdup(prefix ? prefix : "");
+    h->path = strdup(path ? path : "");
+    h->index = index ? strdup(index) : 0;
+    h->prefix_len = strlen(h->prefix);
+    h->flags = flags;
+    if (!http_statics) {
+        http_statics = h;
+    } else {
+        hl = http_statics;
+        while (hl->next)
+            hl = hl->next;
+        hl->next = h;
+    }
+	return (void*) h;
+}
+
+static void http_free_static_handler(void *hs) {
+	http_static *h = (http_static*) hs;
+	if (h->prefix)
+		free(h->prefix);
+	if (h->path)
+		free(h->path);
+	if (h->index)
+		free(h->index);
+	free(h);
+}
+
+void http_rm_static_handler(void *hs) {
+	http_static *h = (http_static*) hs;
+	if (!h)
+		return;
+	if (http_statics == h)
+		http_statics = h->next;
+	else {
+		http_static *h = http_statics;
+		while (h && h->next != hs)
+			h = h->next;
+		if (h)
+			h->next = h->next->next;
+		else
+			return; /* not found */
+	}
+	http_free_static_handler(hs);
+}
+
+void http_rm_all_static_handlers(void) {
+	while (http_statics) {
+		http_static *h = http_statics;
+		http_statics = h->next;
+		http_rm_static_handler(h);
+	}
+}
+
+/** R API **/
+
+SEXP Rserve_http_add_static(SEXP sPrefix, SEXP sPath, SEXP sIndex, SEXP sFlags) {
+	int n = 0;
+	http_static *h;
 	if (TYPEOF(sPrefix) != STRSXP || LENGTH(sPrefix) != 1)
 		Rf_error("Invalid prefix, must be a string");
 	if (TYPEOF(sPath) != STRSXP || LENGTH(sPath) != 1)
 		Rf_error("Invalid path, must be a string");
 	if (!((TYPEOF(sIndex) == STRSXP && LENGTH(sPath) == 1) || sIndex == R_NilValue))
 		Rf_error("Invalid index, must be NULL or a string");
-	h = (http_static*) malloc(sizeof(http_static));
-	if (!h)
-		Rf_error("Cannot allocate structure.");
-	h->next = 0;
-	h->prefix = strdup(CHAR(STRING_ELT(sPrefix, 0)));
-	h->path = strdup(CHAR(STRING_ELT(sPath, 0)));
-	h->index = (sIndex == R_NilValue) ? 0 : strdup(CHAR(STRING_ELT(sIndex, 0)));
-	h->prefix_len = strlen(h->prefix);
-	h->flags = Rf_asInteger(sFlags);
-	if (!http_statics) {
-		http_statics = h;
-	} else {
-		hl = http_statics;
+	
+	if (!http_add_static_handler(strdup(CHAR(STRING_ELT(sPrefix, 0))),
+								 strdup(CHAR(STRING_ELT(sPath, 0))),
+								 (sIndex == R_NilValue) ? 0 : strdup(CHAR(STRING_ELT(sIndex, 0))),
+								 Rf_asInteger(sFlags)))
+		Rf_error("Cannot allocate handler structure.");
+	h = http_statics;
+	while (h) {
 		n++;
-		while (hl->next) {
-			n++;
-			hl = hl->next;
-		}
-		hl->next = h;
+		h = h->next;
 	}
 	return Rf_ScalarInteger(n);
+}
+
+SEXP Rserve_http_rm_all_statics(void) {
+	http_rm_all_static_handlers();
+	return Rf_ScalarLogical(1);
 }
 
 static char http_tmp[512];
@@ -492,7 +546,7 @@ static const char *infer_content_type(const char *fn) {
 /* removes .. and . segments, control characters.
    non-ASCII characters are retained */
 static void sanitize_path(char *path) {
-	char *src = path, *dst = path;
+	unsigned char *src = (unsigned char*) path, *dst = (unsigned char*) path;
 	int pos = 0;
 	DBG(fprintf(stderr, "path: '%s' sanitizing\n", path));
 	while (*src) {
@@ -521,6 +575,8 @@ static void sanitize_path(char *path) {
 		pos++;
 		if (*src >= 32)
 			*(dst++) = *(src++);
+		else
+			src++; /* skip (we shold probably fail, though) */
 	}
 	*dst = 0;
 	DBG(fprintf(stderr, "      '%s'\n", path));
@@ -563,12 +619,14 @@ static void process_request(args_t *c)
 	if (http_statics) {
 		http_static *hs = http_statics;
 		while (hs) {
-			//fprintf(stderr, "match '%s' and '%s'\n", c->url, hs->prefix);
+			DBG(fprintf(stderr, "http_static: match '%s' and '%s'\n", c->url, hs->prefix));
 			if (!strncmp(hs->prefix, c->url, hs->prefix_len)) {
 				struct stat st;
 				const char *fn = c->url + hs->prefix_len;
+				size_t path_len = strlen(hs->path);
 				int found = 0;
-				if (strlen(fn) + strlen(hs->path) +
+				/* 7 padding is plenty - we need up to two '/' and one NUL */
+				if (strlen(fn) + path_len +
 					(hs->index ? strlen(hs->index) : 0) +
 					7 > sizeof(http_tmp)) {
 					send_http_response(c, " 414 Path too long\r\nContent-type: text/plain\r\nContent-length: 14\r\n\r\nPath too long\n");
@@ -576,13 +634,22 @@ static void process_request(args_t *c)
 					return;
 				}
 				strcpy(http_tmp, hs->path);
-				strcat(http_tmp, fn);
-				sanitize_path(http_tmp);
+				/* make sure there is always / between the path and the filename
+				   (except if path="" for backward compatibility meaning ".") */
+				if (path_len > 0 &&
+					(http_tmp[path_len - 1] != '/' || *fn != '/'))
+					http_tmp[path_len++] = '/';
+				strcpy(http_tmp + path_len, fn);
+				/* only sanitize the part coming from the request */
+				sanitize_path(http_tmp + path_len);
 				if (!stat(http_tmp, &st)) { /* path exists */
 					if (st.st_mode & S_IFDIR) { /* if it is a directory, we only accept it if index exists */
 						if (hs->index) {
-							strcat(http_tmp, hs->index);
-							//fprintf(stderr, " - try '%s'\n", http_tmp);
+							size_t http_tmp_len = strlen(http_tmp);
+							if (http_tmp_len > 0 && http_tmp[http_tmp_len - 1] != '/')
+								http_tmp[http_tmp_len++] = '/';
+							strcpy(http_tmp + http_tmp_len, hs->index);
+							DBG(fprintf(stderr, " - target is a directory, try '%s'\n", http_tmp));
 							if (!stat(http_tmp, &st))
 								found = 1;
 						}
@@ -590,7 +657,7 @@ static void process_request(args_t *c)
 						found = 1;
 				}
 				if (!found) {
-					//fprintf(stderr, " - '%s' not found\n", http_tmp);
+					DBG(fprintf(stderr, " - '%s' not found\n", http_tmp));
 					if (hs->flags & HSF_STOP) {
 						send_http_response(c, " 404 Not found\r\nContent-type: text/plain\r\nContent-length: 10\r\n\r\nNot found\n");
 						fin_request(c);

@@ -49,6 +49,9 @@
 #ifdef unix
 #include <sys/un.h>
 #include <unistd.h>
+#ifdef HAVE_CRYPT_H
+#include <crypt.h>
+#endif
 #else
 #define AF_LOCAL -1
 #endif
@@ -141,7 +144,7 @@ Rmessage::Rmessage(int cmd, const void *buf, int dlen, int raw_data) {
     head.cmd=cmd;
     head.len=len;
     data=(char*)malloc(len);
-    memcpy(data, (raw_data)?buf:((char*)buf+4), dlen);
+    memcpy((void*)((raw_data) ? data : data + 4), buf, dlen);
     if (!raw_data)
         *((int*)data)=itop(SET_PAR(DT_BYTESTREAM,dlen));  
     complete=1;

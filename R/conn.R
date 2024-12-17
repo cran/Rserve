@@ -36,10 +36,12 @@ Rserve <- function(debug=FALSE, port, args=NULL, quote=(length(args) > 1), wait,
   invisible(system(cmd, wait=wait, ...))
 }
 
-run.Rserve <- function(..., config.file="/etc/Rserve.conf") {
+run.Rserve <- function(..., config.file="/etc/Rserve.conf", background=FALSE) {
   if (is.null(run_Rserve)) stop("Runnig inside an embedded Rserve instance - starting Rserve recursively is not supported")
-  .Call(run_Rserve, as.character(config.file), sapply(list(...), as.character))
+  .Call(run_Rserve, as.character(config.file), sapply(list(...), as.character), background)
 }
+
+stop.Rserve <- function() .Call(stop_Rserve)
 
 self.ctrlEval <- function(expr) {
   if (!is.loaded("Rserve_ctrlEval")) stop("This command can only be run inside Rserve with r-control enabled")
@@ -93,6 +95,9 @@ Rserve.set.http.request <- function(what) {
 
 Rserve.http.add.static <- function(prefix, path, index=NULL, last=FALSE)
     .Call(Rserve_http_add_static, prefix, path, index, isTRUE(last))
+
+Rserve.http.rm.all.statics <- function()
+    .Call(Rserve_http_rm_all_statics)
 
 resolve.ocap <- function(ocap)
   .Call(Rserve_oc_resolve, ocap)
